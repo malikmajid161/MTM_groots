@@ -10,13 +10,13 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import monotonic
 
-from contracts import InputBatch, RunBudget
+from contracts import Extraction, InputBatch, ModelCall, RunBudget
 from report import render
 
 
 def load_input(path):
     raw = path.read_bytes()
-    return InputBatch(hashlib.sha256(raw).hexdigest(), str(path), raw.decode("utf-8"))
+    return InputBatch(hashlib.sha256(raw).hexdigest(), str(path), raw.decode("utf-8-sig"))
 
 
 def atomic_write(path, content):
@@ -110,15 +110,49 @@ def run(path, runtime, extract, apply_update):
     return int(run_log["status"] == "failed")
 
 
+def extract_for_cli(batch, context, budget, record):
+    from extract import extract
+
+    class ProviderBudget:
+        def acquire(self):
+            budget.reserve_attempt()
+            return budget.remaining()
+
+    class ProviderRecorder:
+        def append(self, row):
+            usage = row["usage"]
+            record(ModelCall(
+                model=row["reported_model"] or row["model"],
+                area=row["tag"],
+                input=row["input"],
+                output=row["output"],
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                total_tokens=usage["total_tokens"],
+                elapsed_seconds=row["elapsed_seconds"],
+                error=row["error"],
+            ))
+
+    source = {"src": batch.source_id, "digest": batch.source_id,
+              "path": batch.path, "text": batch.text}
+    result = extract(source, context, ProviderBudget(), ProviderRecorder())
+    if result["status"] == "UNRESOLVED":
+        raise ValueError("Extraction response unresolved: " + result["ambiguous"][0]["reason"])
+    return Extraction(
+        claims=result["claims"],
+        ambiguities=result["ambiguous"],
+        irrelevant_ids=result["irrelevant"],
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("file", type=Path)
     args = parser.parse_args()
     try:
-        from extract import extract
         from state import apply_update
 
-        return run(args.file, Path("runtime"), extract, apply_update)
+        return run(args.file, Path("runtime"), extract_for_cli, apply_update)
     except (ImportError, OSError, ValueError) as error:
         print(f"Planner could not run: {error}", file=sys.stderr)
         return 1

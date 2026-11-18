@@ -15,11 +15,14 @@ class CommandTests(unittest.TestCase):
             for name in ("main.py", "report.py", "contracts.py"):
                 copy2(repo / name, root / name)
             (root / "extract.py").write_text(
-                "from contracts import Extraction, ModelCall\n"
                 "def extract(batch, context, budget, record):\n"
-                "    budget.reserve_attempt()\n"
-                "    record(ModelCall('mock-extractor', 'reading', batch.text))\n"
-                "    return Extraction(claims=[{'v': batch.text}])\n",
+                "    budget.acquire()\n"
+                "    usage = dict(prompt_tokens=None, completion_tokens=None, total_tokens=None)\n"
+                "    record.append(dict(model='mock-extractor', reported_model=None,\n"
+                "                       tag='reading', input=batch['text'], output={},\n"
+                "                       usage=usage, elapsed_seconds=0, error=None))\n"
+                "    return dict(status='EXTRACTED', claims=[{'v': batch['text']}],\n"
+                "                ambiguous=[], irrelevant=[])\n",
                 encoding="utf-8",
             )
             (root / "state.py").write_text(
