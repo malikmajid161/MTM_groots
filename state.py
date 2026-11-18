@@ -1,6 +1,6 @@
 """Apply normalized updates and retain source decisions and the last valid plan."""
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from plan import Plan, build_plan, normalize_claim
@@ -52,45 +52,9 @@ def parse_message_date(value):
 
 
 def apply_update(state, extraction):
-    """Accept the CLI contract or the standalone normalized fixture envelope."""
-    if isinstance(extraction, dict):
-        return update_state(state, extraction)
+    """Apply compact normalized claims with externally verified source context.
 
-    from contracts import UpdateResult as ContractResult
-
-    ledger = state or {}
-    previous = State(
-        active=tuple(ledger.get("active", ())),
-        sources=tuple(ledger.get("sources", ())),
-        history=tuple(ledger.get("history", ())),
-        review_issues=tuple(ledger.get("review_issues", ())),
-        message_dates=tuple(ledger.get("message_dates", ())),
-        constraints=tuple(ledger.get("constraints", ())),
-        decisions=tuple(Decision(**item) for item in ledger.get("decisions", ())),
-        plan=Plan(**ledger["plan"]) if ledger.get("plan") else None,
-        last_valid=Plan(**ledger["last_valid"]) if ledger.get("last_valid") else None,
-    )
-    result = update_state(previous, {
-        "claims": extraction.claims,
-        "constraints": extraction.constraints,
-        "irrelevant": extraction.irrelevant_ids,
-        "ambiguous": extraction.ambiguities,
-    })
-    updated = result.state
-    return ContractResult(
-        ledger={"revision": ledger.get("revision", 0) + 1, **asdict(updated)},
-        plan={**updated.plan.areas, "issues": updated.plan.issues},
-        status=updated.plan.status,
-        last_valid=asdict(updated.last_valid) if updated.last_valid else None,
-        decisions=[asdict(decision) for decision in result.decisions],
-        affected_areas=list(result.affected_areas),
-    )
-
-
-def update_state(state, extraction):
-    """Apply compact normalized fixtures with externally verified source context.
-
-    The fixture adapter expects trusted_scopes and trusted_message_dates to
+    The planner expects trusted_scopes and trusted_message_dates to
     come from the input envelope supplied by the caller.
     """
     state = State() if state is None else state
@@ -105,12 +69,17 @@ def update_state(state, extraction):
     decisions = []
     affected = set()
     blocking = []
+    constraints = list(state.constraints)
+    incoming_constraints = list(extraction.get("constraints", ()))
     for source, message in extraction.get("sources", {}).items():
         if source in sources and sources[source] != message:
             raise ValueError(f"Source ID already belongs to different evidence: {source}")
         sources[source] = message
 
     for record in extraction.get("claims", ()):
+        if "k" not in record and "family" in record and "payload" in record:
+            incoming_constraints.append(record)
+            continue
         claim = normalize_claim(record)
         source = claim.source or "(missing source)"
         if record in history:
@@ -200,7 +169,10 @@ def update_state(state, extraction):
             source = source.get("src") or "(missing source)"
         decisions.append(Decision(source, "unresolved", "Extraction reported ambiguous content"))
         blocking.append(f"{source}: ambiguous content")
-    for constraint in extraction.get("constraints", ()):
+    for constraint in incoming_constraints:
+        if constraint in constraints:
+            continue
+        constraints.append(dict(constraint))
         source = constraint.get("src") or "(missing source)"
         family = constraint.get("family") or "unknown"
         reason = f"Constraint needs evaluation: {family}"
@@ -218,6 +190,6 @@ def update_state(state, extraction):
         decisions=(*state.decisions, *decisions), plan=plan,
         last_valid=plan if plan.status == "VALID" else state.last_valid, review_issues=unresolved,
         message_dates=tuple(dates.items()),
-        constraints=(*state.constraints, *extraction.get("constraints", ())),
+        constraints=tuple(constraints),
     )
     return UpdateResult(updated, tuple(decisions), tuple(sorted(affected)))
