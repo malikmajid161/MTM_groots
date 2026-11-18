@@ -1,0 +1,36 @@
+<style>
+#planner{margin:20px 24px 0; padding:18px 22px;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--ink)}
+#planner summary{font-size:1rem;font-weight:750;cursor:pointer}
+#planner form{display:grid;gap:12px;margin-top:14px}
+#planner textarea{width:100%;min-height:120px;resize:vertical;background:var(--chip);color:var(--ink);border:1px solid var(--line);padding:12px;border-radius:12px;font:inherit}
+#planner .planner-row,#planner .planner-links{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+#planner label{font-weight:650}
+#planner .planner-links[hidden]{display:none}
+#planner .file-control,#planner button{padding:8px 14px;border-radius:20px;border:1px solid var(--line);color:#201637;background:#d7c3fa;cursor:pointer;font-weight:700}
+#planner .file-control input{max-width:230px}
+#planner button:disabled{opacity:.55;cursor:wait}
+#planner a{color:var(--ink);text-decoration:underline}
+#planner-status[data-error=true]{color:#c45948}
+#planner label:focus-within,#planner button:focus-visible,#planner textarea:focus-visible{outline:2px solid #a98aeb;outline-offset:2px}
+</style>
+<details id="planner">
+  <summary id="planner-heading">Run planner</summary>
+  <form id="planner-form">
+    <label for="planner-input">Paste messages or review uploaded text</label>
+    <textarea id="planner-input" required placeholder="Paste your message pack here"></textarea>
+    <div class="planner-row">
+      <label class="file-control">Upload message file <input id="planner-file" type="file" accept=".txt,.md,.json,.pdf,.docx,.zip"></label>
+      <span>TXT, Markdown, JSON, PDF, Word, ZIP</span>
+    </div>
+    <div class="planner-row">
+      <button id="planner-run" type="submit">Generate plan</button>
+      <span id="planner-status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="planner-links" id="planner-exports" hidden>
+      <a href="/plan.txt" download>Plan</a>
+      <a href="/trace.txt" download>Trace</a>
+      <a href="/submission.txt" download>Submission</a>
+      <a href="/session.json" download>Session JSON</a>
+    </div>
+  </form>
+</details>

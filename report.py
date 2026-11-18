@@ -44,12 +44,16 @@ def sections(session):
 def render(session):
     blocks = list(sections(session))
     plain = "\n\n".join(f"{title}\n{content}" for title, content in blocks) + "\n"
+    return plain, render_dashboard(session)
+
+
+def render_dashboard(session):
     template = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
     script = Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8")
     # Keep untrusted strings in inert text. The dashboard uses textContent.
     data = escape(json.dumps(session, ensure_ascii=False, allow_nan=False), quote=False)
     html = template.replace("<!-- DASHBOARD_SCRIPT -->", script, 1)
-    return plain, html.replace("<!-- SESSION_DATA -->", data, 1)
+    return html.replace("<!-- SESSION_DATA -->", data, 1)
 
 
 def readable_lines(value, indent=0):

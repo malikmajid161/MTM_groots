@@ -165,3 +165,17 @@ The delivery board in [AGILE_TASKS.md](AGILE_TASKS.md) records task ownership an
 ## Submission handoff
 
 Preserve practice evidence before starting the official session. Verify a clean checkout and record `git rev-parse HEAD`; confirm that hash matches the submitted remote commit. Keep the same runtime session through all official updates, record the prediction before its designated update, and inspect the final plan/status and cumulative trace. Submit the requested repository/hash and upload `runtime/submission.txt` through the organizer's form. Model eligibility, official upload and teammate explanation rehearsal are separate acceptance steps.
+
+## Live dashboard
+
+Install document-reading support with `python -m pip install -r requirements.txt`.
+Set the same model environment variables as for the CLI, then run `python web_ui.py`
+and open [the local dashboard](http://127.0.0.1:8765). Use **Run planner** to
+paste messages or upload TXT, Markdown, JSON, PDF with selectable text, Word
+(.docx), or ZIP. Review extracted text before submitting. **Upload session**
+opens a saved report for inspection. Planner submissions use the server's own
+session in `runtime/`.
+
+The dashboard and CLI use the same session and generate the same plan, trace and
+submission exports. To use a separate session, pass `--runtime PATH` to the
+dashboard server. The server only listens on the local machine.
