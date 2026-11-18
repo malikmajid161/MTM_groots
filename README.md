@@ -36,6 +36,26 @@ MODEL_OPTIONS_JSON='{"temperature":0,"max_tokens":8192}'
 
 The tested Gemini configuration and alternative endpoint examples are in `.env.example`. Provider quota, availability and organizer model eligibility must be checked separately. The application does not silently switch models or retry failed requests.
 
+## Minimal testing CLI
+
+```bash
+python cli.py
+```
+
+Paste the test `.txt` file path when prompted. The launcher loads `.env`, runs the planner, prints the readable plan and displays the saved `plan.txt` and `trace.txt` paths. Each invocation starts a fresh test in `runtime/tests/`, preserving prior evidence.
+
+You can also pass the path directly:
+
+```bash
+python cli.py "/path/to/test file.txt"
+```
+
+For a follow-up message, reuse the result directory printed by the first run:
+
+```bash
+python cli.py update.txt --session "runtime/tests/<your-run-directory>"
+```
+
 ## Input and execution
 
 Supply a UTF-8 plain-text message file:
