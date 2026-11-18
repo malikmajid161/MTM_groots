@@ -2,12 +2,13 @@
 
 Integration: load_input(path) -> dict; extract(batch, context, budget, recorder,
 client=ModelClient) -> dict. Majid can adapt these records to shared contracts.
-The complete file is one provenance source; message headers stay verbatim for
-model interpretation. No guessed sender, timestamp or session boundaries.
+The complete file is retained; explicit header sources supplied by the CLI
+keep per-message provenance. No guessed sender, timestamp or session boundaries.
 """
 from __future__ import annotations
 import hashlib
 import json
+import math
 from pathlib import Path
 from model_io import ModelClient
 
@@ -38,7 +39,7 @@ time_order: activities (references),relation; duration/interval/gap and units wh
 count_bound: target,op,bound,unit. availability: resource,windows,time_basis.
 cost_cap: scope,cost_refs,cap,currency. percentage_uplift: base,rate,target,mode,rounding,unit.
 priced_extra: item,required,quantity,price,price_basis,currency.
-Other unsupported constraints remain other. Never claim a constraint passes. Monetary claims require currency and fixed/per_person/per_item price basis. Ambiguity needs src and raw_text; irrelevant entries use source IDs only when the entire source is irrelevant. All claims must cite supplied src; do not discard relevant content mixed with greetings. Raw sources are retained locally; do not repeat them for canonical claims.'''
+Other unsupported constraints remain other. Never claim a constraint passes. Monetary claims require currency and fixed/per_person/per_item price basis. Ambiguity needs src and raw_text; irrelevant entries use source IDs only when the entire source is irrelevant. Every supplied source must appear in claims, irrelevant or ambiguous; never silently omit a source. All claims must cite supplied src; do not discard relevant content mixed with greetings. Raw sources are retained locally; do not repeat them for canonical claims.'''
 
 def load_input(path):
     raw = Path(path).read_bytes()
@@ -78,7 +79,7 @@ def normalize(data, batch):
             reason = 'missing/invalid kind or modality'
         elif c['kind'] in ('directive','proposal','reported_action') and not c.get('actor'):
             reason = 'missing actor'
-        elif c['k'] in NUMERIC and (type(c.get('v')) not in (int,float) or not __import__('math').isfinite(c['v']) or c['v'] < 0):
+        elif c['k'] in NUMERIC and (type(c.get('v')) not in (int,float) or not math.isfinite(c['v']) or c['v'] < 0):
             reason = 'invalid numeric value'
         elif c['k'] != 'other' and ('v' not in c or c['v'] is None):
             reason = 'missing value'
@@ -121,6 +122,13 @@ def normalize(data, batch):
             result['irrelevant'] = data['irrelevant']
         else:
             result['ambiguous'].append({'src': batch['src'], 'reason': 'invalid or mixed irrelevant classification', 'raw_text': batch['text']})
+    covered = {c.get('src') for c in result['claims'] if isinstance(c.get('src'), str)}
+    covered.update(result['irrelevant'])
+    covered.update(c['src'] for c in result['ambiguous'])
+    for source_id, text in sources.items():
+        if source_id not in covered:
+            result['ambiguous'].append({'src': source_id, 'raw_text': text,
+                'reason': 'source omitted from extraction'})
     if not any(result[k] for k in ('claims','irrelevant','ambiguous')):
         result['ambiguous'].append({'src': batch['src'], 'raw_text': batch['text'], 'reason': 'empty extraction'})
     return result

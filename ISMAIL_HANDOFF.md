@@ -36,3 +36,15 @@ These mocks test adapter/normalizer behavior, NOT model extraction accuracy or l
 - MODEL_ENDPOINT, MODEL_NAME, MODEL_API_KEY, MODEL_APPROVED_MODELS were not configured. Organizer-approved list and real English/Roman Urdu smoke call remain unverified. No live performance/accuracy claim is made.
 - No end-to-end planner/CLI exists in this worktree yet. Full run/update timing, final report and integration acceptance belong to later shared iterations.
 - Tests and live runs must be reported separately. Do not call the whole project complete from this handoff.
+
+## I3 follow-up — integrated extractor/provider hardening
+
+The earlier missing-contract note is historical: Majid's adapters and contracts are now integrated. The current CLI pipeline was included in verification.
+
+- Added per-source coverage checks: a message omitted by the model becomes an explicit ambiguity, even when other messages in the same batch extracted successfully. This detects whole-source omissions; it cannot prove every fact within a source was extracted correctly.
+- Verbatim spans for unfamiliar constraints must belong to the referenced message, not another message in the pack.
+- HTTP errors and malformed/non-JSON success bodies retain HTTP status and raw body in the trace. Provider-reported usage on error bodies is preserved when present. No retry is automatic.
+- Disabled HTTP redirects so one reserved provider attempt cannot silently turn into another request or forward authorization to a new destination.
+- Trimmed whitespace around configured model allowlist entries.
+- Full integrated suite: 40 tests passed with localhost socket permission, including CLI initial pack plus three updates through deterministic local HTTP responses. Local fixtures are not live model evidence; usage in them is synthetic.
+- Live access remains unavailable: MODEL_ENDPOINT, MODEL_NAME, MODEL_API_KEY and MODEL_APPROVED_MODELS are unset, and no .env exists in either the isolated worktree or original workspace. No real model accuracy, latency or token measurements are claimed.

@@ -71,22 +71,40 @@ class TraceRecorder:
             print(json.dumps(row, ensure_ascii=False), file=stream)
         print('Total tokens: ' + json.dumps(self.totals()), file=stream)
 
-_HTTP_WORKER = '''import json, sys, urllib.request
-x=json.load(sys.stdin)
-r=urllib.request.Request(x['endpoint'], data=json.dumps(x['payload']).encode(), headers={'Content-Type':'application/json','Authorization':'Bearer '+x['key']}, method='POST')
-with urllib.request.urlopen(r, timeout=x['timeout']) as response:
-    sys.stdout.write(response.read().decode('utf-8'))
-'''
+class ProviderResponseError(RuntimeError):
+    """A received response could not be used; raw body stays available for audit."""
+    def __init__(self, status, body):
+        super().__init__(f'provider response failed (HTTP {status})')
+        self.status, self.body = status, body
+
+_HTTP_WORKER = '\n'.join((
+    'import json, sys, urllib.request, urllib.error',
+    'x=json.load(sys.stdin)',
+    'class NoRedirect(urllib.request.HTTPRedirectHandler):',
+    '    def redirect_request(self, *args, **kwargs): return None',
+    "r=urllib.request.Request(x['endpoint'], data=json.dumps(x['payload']).encode(), headers={'Content-Type':'application/json','Authorization':'Bearer '+x['key']}, method='POST')",
+    'try:',
+    "    response=urllib.request.build_opener(NoRedirect).open(r, timeout=x['timeout'])",
+    'except urllib.error.HTTPError as error:',
+    '    response=error',
+    'with response:',
+    "    print(json.dumps({'status':response.code,'body':response.read().decode('utf-8', errors='replace')}))",
+))
 
 def http_transport(endpoint, key, payload, timeout):
-    # Parent timeout is an absolute wall bound even if the server trickles bytes.
+    # Parent timeout bounds wall time even when the server trickles response bytes.
     result = subprocess.run([sys.executable, '-c', _HTTP_WORKER],
         input=json.dumps(dict(endpoint=endpoint, key=key, payload=payload, timeout=timeout)),
-        text=True, capture_output=True, timeout=timeout)
+        text=True, capture_output=True, timeout=timeout, encoding='utf-8')
     if result.returncode:
-        # Worker stderr may contain provider data; never print it or credentials.
         raise RuntimeError('provider HTTP worker failed')
-    return json.loads(result.stdout)
+    response = json.loads(result.stdout)
+    if not 200 <= response['status'] < 300:
+        raise ProviderResponseError(response['status'], response['body'])
+    try:
+        return json.loads(response['body'])
+    except ValueError:
+        raise ProviderResponseError(response['status'], response['body']) from None
 
 class ModelClient:
     def __init__(self, endpoint, model, api_key, transport=http_transport, approved_models=None):
@@ -105,7 +123,7 @@ class ModelClient:
         approved = os.environ.get('MODEL_APPROVED_MODELS')
         return cls(os.environ.get('MODEL_ENDPOINT'), os.environ.get('MODEL_NAME'),
                    os.environ.get('MODEL_API_KEY'),
-                   approved_models=approved.split(',') if approved else None)
+                   approved_models=[m.strip() for m in approved.split(',') if m.strip()] if approved else None)
 
     def call(self, messages, budget, recorder, tag='reading'):
         if tag not in TAGS:
@@ -130,6 +148,15 @@ class ModelClient:
                 raise ValueError('provider content is not text')
             return content
         except Exception as exc:
+            if isinstance(exc, ProviderResponseError):
+                raw = {'http_status': exc.status, 'body': exc.body}
+                try:
+                    supplied = json.loads(exc.body).get('usage') or {}
+                    for k in usage:
+                        value = supplied.get(k)
+                        usage[k] = value if type(value) is int and value >= 0 else None
+                except (ValueError, AttributeError, TypeError):
+                    pass
             error = type(exc).__name__  # no potentially secret-bearing exception text
             raise
         finally:
