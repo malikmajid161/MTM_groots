@@ -4,14 +4,10 @@ const themeToggle = document.querySelector("#theme-toggle");
 function applyTheme(theme) {
     document.documentElement.dataset.theme = theme;
     themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
-    themeToggle.textContent = theme === "dark" ? "Light theme" : "Dark theme";
+    themeToggle.textContent = theme === "dark" ? "\u2600" : "\u263E";
+    themeToggle.setAttribute("aria-label", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
 }
-let savedTheme = "dark";
-try {
-    const preference = localStorage.getItem("groots-theme");
-    if (preference === "light" || preference === "dark") savedTheme = preference;
-} catch { /* Storage can be unavailable for local files. */ }
-applyTheme(savedTheme);
+applyTheme(document.documentElement.dataset.theme);
 themeToggle.addEventListener("click", () => {
     const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     applyTheme(theme);
@@ -40,7 +36,10 @@ let currentSession = JSON.parse(document.querySelector("#session-data").content.
 loadSession(currentSession);
 const unavailable = "Unavailable";
 const areaNames = ["venue", "schedule", "food", "judging", "budget"];
-const sections = [["plan", "Plan"], ["trace", "Traces"], ["updates", "Updates"]];
+const sections = [
+    ["overview", "Overview"], ["plan", "Event Plan"], ["evolution", "Plan Evolution"],
+    ["updates", "Updates"], ["trace", "AI Trace"], ["sources", "Sources"],
+];
 const nav = document.querySelector("#nav");
 const pages = document.querySelector("#pages");
 
@@ -486,10 +485,231 @@ function trace(page) {
     page.append(summary, listing);
 }
 
-const renderers = {plan: eventPlan, updates, trace};
+
+function overview(page) {
+    heading(page, "Your event, intelligently planned.", "Every constraint considered. Every decision explained.");
+    const layout = el("div", "intelligence-grid");
+    const status = planStatus(result);
+    const issues = result?.plan?.issues ?? [];
+    const brief = card(null, "run-brief");
+    const lead = el("div", "row");
+    lead.append(el("span", "brief-mark", "✦"), el("h2", "", latest ? runTitle(latest) : "Groots intelligence"), pill(status));
+    const decisions = latest?.decisions ?? [];
+    const outcome = decisions.find(item => item.outcome === "rejected" || item.outcome === "unresolved");
+    brief.append(lead, el("p", "brief-summary", issues[0] ?? outcome?.reason ??
+        (latest ? "Review the saved event plan and the decisions from this run." : "Open a saved session to review your event plan.")),
+        button("Inspect event plan", "secondary primary-action", () => activate("plan", true)));
+    const constraints = card("Constraint intelligence", "constraint-preview");
+    const records = result?.ledger?.constraints ?? [];
+    if (records.length) {
+        const tally = [["PASS", "Passed"], ["FAIL", "Failed"], ["UNKNOWN", "Unknown"]];
+        const counts = tally.map(([key]) => records.filter(record => {
+            const verdict = record.validation ?? record.status;
+            return (verdict === "PASS" || verdict === "FAIL" ? verdict : "UNKNOWN") === key;
+        }).length);
+        const strip = el("div", "constraint-strip");
+        const keys = el("div", "row spread");
+        tally.forEach(([, title], index) => {
+            const segment = el("span");
+            segment.style.flexGrow = counts[index];
+            strip.append(segment);
+            keys.append(el("span", "muted", counts[index] + " " + title.toLowerCase()));
+        });
+        strip.setAttribute("aria-hidden", "true");
+        constraints.append(strip, keys);
+    } else constraints.append(el("p", "muted", "No individual constraint verdicts saved."));
+    constraints.append(button("Inspect constraints", "secondary", () => activate("sources", true)));
+
+    const budget = budgetFigures(areas(result).budget);
+    const metrics = el("div", "feature-pair");
+    const spend = card("Budget utilization", "feature feature-budget");
+    spend.append(el("p", "feature-number", budget.utilization == null ? unavailable : budget.utilization.toFixed(1) + "%"),
+        el("p", "", "Remaining · " + budget.remaining));
+    if (budget.utilization !== null) {
+        const meter = el("progress");
+        meter.max = Math.max(100, budget.utilization);
+        meter.value = Math.max(0, budget.utilization);
+        meter.setAttribute("aria-label", "Budget utilization");
+        spend.append(meter);
+    }
+    const efficiency = card("LLM efficiency", "feature feature-llm");
+    efficiency.append(el("p", "feature-number", latest ? calls.length + " calls" : unavailable),
+        el("p", "", "Tokens · " + (latest ? tokenTotal(calls, "total_tokens") : unavailable)));
+    if (runs.length) {
+        const activity = el("div", "call-activity");
+        const recentRuns = runs.slice(-10);
+        const maxCalls = Math.max(1, ...recentRuns.map(run => run.calls?.length ?? 0));
+        activity.setAttribute("role", "img");
+        activity.setAttribute("aria-label", recentRuns.map(run =>
+            runTitle(run) + ": " + (run.calls?.length ?? 0) + " calls").join("; "));
+        for (const run of recentRuns) {
+            const count = run.calls?.length ?? 0;
+            const bar = el("span");
+            bar.style.height = (count / maxCalls * 100) + "%";
+            activity.append(bar);
+        }
+        efficiency.append(activity);
+    }
+    metrics.append(spend, efficiency);
+
+    const versions = card("Plan evolution", "versions-preview");
+    const versionList = el("div", "mini-timeline");
+    const recent = runs.length > 4 ? [runs[0], ...runs.slice(-3)] : runs;
+    for (const run of recent) {
+        const rejected = run.decisions?.some(item => item.outcome === "rejected");
+        versionList.append(button(runTitle(run) + (rejected ? " · Rejected" : run === latest ? " · Latest" : ""),
+            "secondary", () => {
+                activate("evolution", true);
+                [...document.querySelectorAll("#panel-evolution [data-run]")].find(control => control.dataset.run === String(run.number))?.click();
+            }));
+    }
+    versions.append(recent.length ? versionList : el("p", "muted", "No saved runs."));
+    const updates = card("Latest updates", "updates-preview");
+    for (const run of runs.slice(1).slice(-3).reverse()) {
+        const decision = run.decisions?.find(item => item.outcome === "rejected" || item.outcome === "unresolved") ?? run.decisions?.at(-1);
+        const row = el("div", "update-preview");
+        const top = el("div", "row spread");
+        top.append(el("span", "", runTitle(run)), pill(decision?.outcome ?? run.status));
+        const source = run.source_path?.split(/[/\\]/).at(-1);
+        row.append(top, el("p", "muted", [source, ...(run.affected_areas ?? [])].filter(Boolean).join(" · ")));
+        if (decision?.reason) row.append(el("p", "update-reason", decision.reason));
+        updates.append(row);
+    }
+    if (runs.length < 2) updates.append(el("p", "muted", "No updates recorded."));
+    metrics.append(versions);
+    const activityColumn = el("div", "stack");
+    activityColumn.append(architecture(), updates);
+    layout.append(brief, constraints, metrics, activityColumn);
+    page.append(layout);
+}
+
+function architecture() {
+    const panel = card("Groots processing flow", "network-panel");
+    const svgNode = (tag, attrs) => {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+        return node;
+    };
+    const diagram = svgNode("svg", {viewBox:"0 0 520 252", class:"network-svg", role:"group", "aria-label":"Groots processing network"});
+    const points = [
+        [49, 49, "Messages", "Original messages enter the run."],
+        [187, 49, "Extraction", "The model extracts claims and constraints."],
+        [340, 49, "State & authority", "The ledger evaluates updates and authority."],
+        [260, 132, "Groots planner", "The deterministic planner checks all five planning areas."],
+        [461, 132, "Plan output", "The saved result includes the plan status and evidence."],
+        ...areaNames.map((name, index) => [52 + index * 104, 220, label(name), "Planning domain: " + label(name)])
+    ];
+    const links = [[0,1],[1,2],[2,3],[3,4], ...areaNames.map((_, index) => [3, index + 5])];
+    const paths = links.map(([from,to]) => {
+        const [x,y] = points[from], [endX,endY] = points[to];
+        const midX = (x + endX) / 2, midY = (y + endY) / 2;
+        const d = y === endY ? "M"+x+" "+y+" C"+midX+" "+(y-26)+" "+midX+" "+(y-26)+" "+endX+" "+endY :
+            "M"+x+" "+y+" C"+x+" "+midY+" "+endX+" "+midY+" "+endX+" "+endY;
+        const path = svgNode("path",{d,class:"network-wire"});
+        diagram.append(path);
+        return path;
+    });
+    const info = el("p", "muted");
+    function select(index) {
+        nodes.forEach((node, position) => node.setAttribute("aria-pressed", String(position === index)));
+        info.textContent = points[index][3];
+    }
+    const nodes = points.map(([x,y,title], index) => {
+        const group = svgNode("g",{transform:"translate("+x+" "+y+")",class:index === 3 ? "network-node network-core" : "network-node",tabindex:"0",role:"button","aria-label":title});
+        const width = index === 3 ? 124 : index === 2 ? 112 : 94;
+        group.append(svgNode("rect",{x:-width/2,y:-16,width,height:32,rx:12}));
+        const text = svgNode("text",{y:4,"text-anchor":"middle"});
+        text.textContent = title;
+        group.append(text);
+        group.addEventListener("click", () => select(index));
+        group.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(index); }
+        });
+        diagram.append(group);
+        return group;
+    });
+    panel.append(diagram, info);
+    select(3);
+    if (latest) {
+        let timer;
+        panel.append(button("Replay recorded run", "secondary replay-control", () => {
+            clearTimeout(timer);
+            const observed = [0];
+            if (latest.calls?.length) observed.push(1);
+            if (latest.decisions?.length) observed.push(2);
+            if (latest.affected_areas?.length) observed.push(3);
+            if (latest.after?.plan) observed.push(4);
+            paths.forEach(path => path.classList.remove("replaying"));
+            if (matchMedia("(prefers-reduced-motion: reduce)").matches) { select(observed.at(-1)); return; }
+            let position = 0;
+            function advance() {
+                paths.forEach(path => path.classList.remove("replaying"));
+                if (position >= observed.length) return;
+                const index = observed[position++];
+                select(index);
+                if (position > 1) links.forEach(([from,to], link) => {
+                    if (from === observed[position-2] && to === index) paths[link].classList.add("replaying");
+                });
+                timer = setTimeout(advance, 430);
+            }
+            advance();
+        }));
+    }
+    return panel;
+}
+
+
+function evolution(page) {
+    heading(page, "Plan evolution", "Compare saved results across runs.");
+    if (!runs.length) { page.append(card("No runs recorded")); return; }
+    const timeline = el("div", "timeline row");
+    const selected = el("div", "stack");
+    const controls = runs.map(run => button(runTitle(run), "", () => {
+        controls.forEach(control => control.setAttribute("aria-pressed", String(control.textContent === runTitle(run))));
+        const evidence = card(runTitle(run));
+        evidence.append(facts([
+            ["Affected areas", run.affected_areas?.join(", ") || unavailable],
+            ["LLM calls", run.calls?.length ?? 0],
+            ["Tokens consumed", tokenTotal(run.calls ?? [], "total_tokens")],
+        ]), details("Incoming messages", () => runInput(run)), decisionList(run));
+        if (run.after?.last_valid) evidence.append(details("Last valid plan",
+            () => el("pre", "", display(run.after.last_valid))));
+        selected.replaceChildren(evidence, compare(run.before, run.after));
+    }));
+    controls.forEach((control, index) => control.dataset.run = runs[index].number);
+    timeline.append(...controls);
+    page.append(timeline, selected);
+    controls.at(-1).click();
+}
+
+function sources(page) {
+    heading(page, "Sources", "Review the original messages and constraint evidence.");
+    const sources = new Map([...sourceMap].map(([id, source]) => [id, source.text]));
+    for (const [id, text] of messageMap) sources.set(id, text);
+    page.append(paged([...sources], 20, rows => {
+        const list = el("div", "stack");
+        if (!rows.length) list.append(card("No sources recorded"));
+        for (const [id, text] of rows) {
+            const panel = card(null);
+            panel.append(details(sourceMeta(id, text) || id, () => el("pre", "message", display(text))));
+            list.append(panel);
+        }
+        return list;
+    }));
+    const evidence = card("Constraint evidence");
+    const records = result?.ledger?.constraints ?? [];
+    if (!records.length) evidence.append(el("p", "muted", "No individual constraint records saved."));
+    for (const record of records) evidence.append(details(label(record.family ?? "Constraint"), () =>
+        el("pre", "", display(record))));
+    for (const issue of result?.plan?.issues ?? []) evidence.append(el("p", "muted", issue));
+    page.append(evidence);
+}
+
+const renderers = {overview, plan: eventPlan, evolution, updates, trace, sources};
 const tabs = new Map();
 
 function activate(id, moveFocus = false) {
+    document.querySelector("#page-title").textContent = sections.find(([key]) => id === key)[1];
     for (const [key, {tab, panel}] of tabs) {
         const selected = id === key;
         tab.setAttribute("aria-selected", String(selected));
@@ -502,7 +722,10 @@ function activate(id, moveFocus = false) {
 }
 
 sections.forEach(([id, title], index) => {
-    const tab = button(title, "", () => activate(id));
+    const icons = {overview: "▦", plan: "≡", evolution: "↶", updates: "↳", trace: "⌁", sources: "▤"};
+    const tab = button(icons[id], "rail-button", () => activate(id));
+    tab.title = title;
+    tab.setAttribute("aria-label", title);
     tab.id = "tab-" + id;
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-controls", "panel-" + id);
@@ -527,13 +750,12 @@ sections.forEach(([id, title], index) => {
     tabs.set(id, {tab, panel});
 });
 
-activate("plan");
+activate("overview");
 
 // The offline dashboard opens saved planner results.
 const upload = document.querySelector("#session-upload");
 const uploadStatus = document.querySelector("#upload-status");
-upload.addEventListener("change", async () => {
-    const file = upload.files[0];
+async function importSession(file) {
     if (!file) return;
     const refresh = () => {
         for (const {panel} of tabs.values()) panel.replaceChildren();
@@ -552,4 +774,17 @@ upload.addEventListener("change", async () => {
     } finally {
         upload.value = "";
     }
+}
+
+const uploadTarget = document.querySelector("#upload-target");
+upload.addEventListener("change", () => importSession(upload.files[0]));
+uploadTarget.addEventListener("dragover", event => {
+    event.preventDefault();
+    uploadTarget.classList.add("drag-over");
+});
+uploadTarget.addEventListener("dragleave", () => uploadTarget.classList.remove("drag-over"));
+uploadTarget.addEventListener("drop", event => {
+    event.preventDefault();
+    uploadTarget.classList.remove("drag-over");
+    importSession(event.dataTransfer.files[0]);
 });
