@@ -76,6 +76,18 @@ function heading(page, title, subtitle, kicker) {
 
 function card(title, classes = "") {
     const panel = el("article", "card " + classes);
+    panel.addEventListener("pointermove", event => {
+        if (event.pointerType !== "mouse" || event.target.closest(".card") !== panel) return;
+        const bounds = panel.getBoundingClientRect();
+        const horizontal = (event.clientX - bounds.left) / bounds.width - 0.5;
+        const vertical = (event.clientY - bounds.top) / bounds.height - 0.5;
+        panel.style.setProperty("--tile-x", -vertical * 4 + "deg");
+        panel.style.setProperty("--tile-y", horizontal * 4 + "deg");
+    });
+    panel.addEventListener("pointerleave", () => {
+        panel.style.removeProperty("--tile-x");
+        panel.style.removeProperty("--tile-y");
+    });
     if (title) panel.append(el("h2", "", title));
     return panel;
 }
@@ -233,7 +245,7 @@ function eventPlan(page) {
     if (Object.keys(budget.extras ?? {}).length) {
         budgetCard.append(details("Itemized extras", () => facts(Object.entries(budget.extras))));
     }
-    grid.append(venueCard, scheduleCard, foodCard, judgingCard, budgetCard);
+    grid.append(scheduleCard, venueCard, foodCard, judgingCard, budgetCard);
     page.append(grid);
     const issues = result?.plan?.issues ?? [];
     if (issues.length) {
