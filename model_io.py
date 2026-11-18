@@ -82,7 +82,7 @@ _HTTP_WORKER = '\n'.join((
     'x=json.load(sys.stdin)',
     'class NoRedirect(urllib.request.HTTPRedirectHandler):',
     '    def redirect_request(self, *args, **kwargs): return None',
-    "r=urllib.request.Request(x['endpoint'], data=json.dumps(x['payload']).encode(), headers={'Content-Type':'application/json','Authorization':'Bearer '+x['key']}, method='POST')",
+    "r=urllib.request.Request(x['endpoint'], data=json.dumps(x['payload']).encode(), headers={'Content-Type':'application/json','Accept':'application/json','User-Agent':'MTM-Groots/1.0','Authorization':'Bearer '+x['key']}, method='POST')",
     'try:',
     "    response=urllib.request.build_opener(NoRedirect).open(r, timeout=x['timeout'])",
     'except urllib.error.HTTPError as error:',
@@ -107,7 +107,7 @@ def http_transport(endpoint, key, payload, timeout):
         raise ProviderResponseError(response['status'], response['body']) from None
 
 class ModelClient:
-    def __init__(self, endpoint, model, api_key, transport=http_transport, approved_models=None):
+    def __init__(self, endpoint, model, api_key, transport=http_transport, approved_models=None, request_options=None):
         if not endpoint or not model or not api_key:
             raise ValueError('MODEL_ENDPOINT, MODEL_NAME and MODEL_API_KEY are required')
         if not endpoint.startswith('https://'):
@@ -115,6 +115,11 @@ class ModelClient:
                 raise ValueError('remote provider endpoint must use HTTPS')
         if approved_models is not None and model not in approved_models:
             raise ValueError('configured model is outside supplied approved list')
+        options = request_options or {}
+        if not isinstance(options, dict) or set(options) - {'temperature', 'top_p', 'max_tokens', 'response_format', 'chat_template_kwargs', 'reasoning_budget', 'reasoning_effort'}:
+            raise ValueError('unsupported MODEL_OPTIONS_JSON fields')
+        # Copies prevent callers from changing the exact request after validation.
+        self.request_options = json.loads(json.dumps(options, allow_nan=False))
         self.endpoint, self.model, self.api_key = endpoint, model, api_key
         self.transport = transport
 
@@ -123,13 +128,14 @@ class ModelClient:
         approved = os.environ.get('MODEL_APPROVED_MODELS')
         return cls(os.environ.get('MODEL_ENDPOINT'), os.environ.get('MODEL_NAME'),
                    os.environ.get('MODEL_API_KEY'),
-                   approved_models=[m.strip() for m in approved.split(',') if m.strip()] if approved else None)
+                   approved_models=[m.strip() for m in approved.split(',') if m.strip()] if approved else None,
+                   request_options=json.loads(os.environ.get('MODEL_OPTIONS_JSON') or '{}'))
 
     def call(self, messages, budget, recorder, tag='reading'):
         if tag not in TAGS:
             raise ValueError('invalid call tag')
         timeout = budget.acquire()
-        payload = {'model': self.model, 'messages': messages}
+        payload = {**self.request_options, 'model': self.model, 'messages': messages, 'stream': False}
         start = time.monotonic()
         usage = dict(prompt_tokens=None, completion_tokens=None, total_tokens=None)
         raw, error, reported_model = None, None, None
@@ -143,6 +149,8 @@ class ModelClient:
                     usage[k] = v if type(v) is int and v >= 0 else None
             if time.monotonic() - start > timeout:
                 raise BudgetExceeded('provider exceeded reserved call deadline')
+            if raw['choices'][0].get('finish_reason') in ('length', 'content_filter'):
+                raise ValueError('provider completion was truncated or filtered')
             content = raw['choices'][0]['message']['content']
             if not isinstance(content, str):
                 raise ValueError('provider content is not text')

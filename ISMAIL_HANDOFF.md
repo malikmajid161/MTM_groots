@@ -48,3 +48,7 @@ The earlier missing-contract note is historical: Majid's adapters and contracts 
 - Trimmed whitespace around configured model allowlist entries.
 - Full integrated suite: 40 tests passed with localhost socket permission, including CLI initial pack plus three updates through deterministic local HTTP responses. Local fixtures are not live model evidence; usage in them is synthetic.
 - Live access remains unavailable: MODEL_ENDPOINT, MODEL_NAME, MODEL_API_KEY and MODEL_APPROVED_MODELS are unset, and no .env exists in either the isolated worktree or original workspace. No real model accuracy, latency or token measurements are claimed.
+
+## Latest live verification
+
+See `ISMAIL_LIVE_RESULTS.md` for the real NVIDIA/Groq/Gemini measurements, failed experiments, tested Gemini configuration and remaining owner handoffs. The earlier statement that credentials are unavailable is historical. Keys are now configured locally; none were committed. The supported Gemini sequence passed independent cost/quantity checks and rejected the wrong amendment, but current plan status remains UNVERIFIED after the rejection due the planner's persistent fulfillment issue. This is not an all-criteria completion claim.

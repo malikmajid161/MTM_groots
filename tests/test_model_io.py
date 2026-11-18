@@ -107,3 +107,24 @@ class ProviderTests(unittest.TestCase):
                 self.assertEqual(len(requests),2)
             finally:
                 server.shutdown();thread.join()
+
+    def test_provider_options_are_traced_and_streaming_disabled(self):
+        options={'temperature':0,'max_tokens':8192,'response_format':{'type':'json_object'},'chat_template_kwargs':{'enable_thinking':False}}
+        trace=TraceRecorder();sent=[]
+        def transport(endpoint,key,payload,timeout):
+            sent.append(payload)
+            return {'choices':[{'message':{'content':'{}'},'finish_reason':'stop'}]}
+        client=ModelClient('https://example.invalid','m','s',transport=transport,request_options=options)
+        options['max_tokens']=1
+        client.call([],RunBudget(),trace)
+        self.assertEqual(sent[0]['max_tokens'],8192)
+        self.assertFalse(sent[0]['stream'])
+        self.assertFalse(trace.records[0]['input']['chat_template_kwargs']['enable_thinking'])
+        with self.assertRaises(ValueError): ModelClient('https://example.invalid','m','s',request_options={'model':'override'})
+
+    def test_truncated_valid_json_is_not_treated_as_complete_extraction(self):
+        trace=TraceRecorder()
+        client=ModelClient('https://example.invalid','m','s',transport=lambda *a:{'choices':[{'message':{'content':'{}'},'finish_reason':'length'}],'usage':{'total_tokens':21}})
+        with self.assertRaises(ValueError): client.call([],RunBudget(),trace)
+        self.assertEqual(trace.totals()['total_tokens'],21)
+        self.assertEqual(trace.records[0]['error'],'ValueError')
