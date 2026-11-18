@@ -183,7 +183,8 @@ def extract_for_cli(batch, context, budget, record):
     if len(messages) > 1:
         source["messages"] = messages
     result = extract(source, {
-        "active_claims": context.get("active", []),
+        "active_claims": [*context.get("active", []), *context.get("constraints", []),
+                          *(item["record"] for item in context.get("review_records", []))],
     }, ProviderBudget(), ProviderRecorder())
     if result["status"] == "UNRESOLVED":
         raise ValueError("Extraction response unresolved: " + result["ambiguous"][0]["reason"])

@@ -296,6 +296,10 @@ def build_plan(claims, constraints=()):
     team_size = read(event, "team_size")
     staff = read(event, "staff_count")
     available = read(event, "judge_count")
+    if available is None:
+        pools = select("judge")
+        if pools:
+            available = sum(read(group, "quantity", read(group, "judge_count", 1)) for _, group in pools)
     start = read(activity, "start_time")
     end = read(activity, "end_time")
     duration = read(activity, "duration_minutes")
@@ -346,6 +350,38 @@ def build_plan(claims, constraints=()):
         if finish <= begin or (length is not None and finish - begin != timedelta(minutes=length)):
             return Plan("INFEASIBLE", areas, tuple(issues + [f"{name}: activity times contradict duration"]))
         intervals[name] = (begin, finish)
+    if relative:
+        # Place duration-only activities in an order satisfying supported edges.
+        names = list(intervals)
+        edges = {name: set() for name in names}
+        for item in hard_constraints:
+            payload = item.get("payload", {})
+            if item.get("family") != "time_order" or set(payload) != {"activities", "relation"}:
+                continue
+            refs = payload.get("activities")
+            if not isinstance(refs, list) or len(refs) != 2 or any(name not in edges for name in refs):
+                continue
+            left, right = refs
+            if payload.get("relation") == "after":
+                left, right = right, left
+            elif payload.get("relation") != "before":
+                continue
+            edges[right].add(left)
+        ordered = []
+        while len(ordered) < len(names):
+            ready = next((name for name in names if name not in ordered and edges[name] <= set(ordered)), None)
+            if ready is None:
+                return Plan("INFEASIBLE", areas, ("Activity ordering constraints contain a cycle.",))
+            ordered.append(ready)
+        cursor = origin
+        for name in ordered:
+            length = intervals[name][1] - intervals[name][0]
+            intervals[name] = cursor, cursor + length
+            cursor += length
+        start, end = intervals[activity_id]
+        areas["schedule"].update(start=stamp(start), end=stamp(end))
+        if cursor - origin > timedelta(minutes=event_duration):
+            return Plan("INFEASIBLE", areas, ("Activities exceed the event duration.",))
     if len(intervals) > 1:
         areas["schedule"]["activities"] = {
             name: {"start": stamp(begin), "end": stamp(finish)}
@@ -412,6 +448,10 @@ def build_plan(claims, constraints=()):
         except (KeyError, TypeError, ValueError, ArithmeticError):
             issues.append(f"{constraint.get('src')}: priced extra cost or availability is unverified")
 
+    # A zero vendor commitment is evidence of no sunk cost, not an added order.
+    for _, group in select("vendor_item"):
+        if "committed_cost" in group and group["committed_cost"].value == 0:
+            read(group, "committed_cost")
     venues, meals = select("venue_option"), select("vendor_item")
     if not venues or not meals:
         issues.append("Venue and meal options are required")
@@ -501,6 +541,27 @@ def build_plan(claims, constraints=()):
                         # An explicit existing order quantity is never reduced here.
                         if meal.get("unit_price") and meal["unit_price"].price_basis in {"per_item", "per_person"}:
                             quantity = people
+                            bases = {"people": people, "students": students, "judges": len(engaged)}
+                            for requirement in checks:
+                                payload = requirement.get("payload", {})
+                                if payload.get("target") != "meals":
+                                    continue
+                                try:
+                                    if requirement.get("family") == "count_bound" and payload.get("unit") == "meals":
+                                        bound = payload["bound"]
+                                        if type(bound) is int and payload["op"] in {"=", "==", ">=", ">"}:
+                                            quantity = max(quantity, bound + (payload["op"] == ">"))
+                                    elif requirement.get("family") == "percentage_uplift":
+                                        factor = nonnegative_amount(payload["rate"])
+                                        if payload["mode"] in {"increase", "additive"}:
+                                            factor += 1
+                                        elif payload["mode"] != "share":
+                                            continue
+                                        amount = (bases[payload["base"]] * factor).to_integral_value(
+                                            rounding=ROUNDING[payload["rounding"]])
+                                        quantity = max(quantity, int(amount))
+                                except (KeyError, TypeError, ValueError, ArithmeticError):
+                                    pass  # The constraint evaluator exposes invalid operands.
                         else:
                             issues.append(f"{meal_id}: a fixed meal order quantity is missing")
                             continue

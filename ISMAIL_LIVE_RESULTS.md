@@ -44,3 +44,24 @@ Independent checks were compared against the synthetic input, not just the plann
 **Majid:** rerun the exact CLI/release suite after integration, inspect offline report and cumulative trace, rehearse a prediction BEFORE a designated update, and verify the final submitted hash. These live cases do not establish that every unseen constraint is implemented.
 
 **Ismail:** broader wording/constraint coverage and repeated-run accuracy remain unverified. The successful Gemini sequence is evidence for this supported case, not a general correctness guarantee. Model-list approval and quota availability at judging remain external prerequisites.
+
+## Integrated backend checkpoint (supersedes the owner handoffs above)
+
+Majid's remaining integration commits through `05e2bd9` are merged. The user authorized Ismail to complete backend work and subsequently assigned UI work to Abdullah. The integrated suite now passes **61 tests**.
+
+The broader original-wording Cedar pack completed all four production CLI runs at `/tmp/ismail-live/integrated-full/`:
+
+| Run | Wall seconds | Calls | Reported tokens | Independent outcome |
+|---|---:|---:|---:|---|
+| Initial | 7.37 | 1 | 4655 | VALID; total 377, order 27 |
+| Roman Urdu correction | 2.34 | 1 | 3659 | VALID; replacement total 381 |
+| Unauthorized reduction | 2.15 | 1 | 3660 | Rejected; approved order 27 and valid plan retained |
+| Venue capacity change | 4.35 | 1 | 3790 | VALID; capacity 25, total 381 |
+
+Total reported tokens: 15764. A prediction file was written before the first update, but used invalid tag `general`. The report correctly recorded a prediction error; prediction acceptance is **not** marked complete.
+
+New aggregate-judge, parallel, duration-only pack at `/tmp/ismail-live/aggregate-audited/` passed in **10.72 seconds**, two calls, **3805 + 4417 = 8222** reported tokens. Independently checked: 44 students / teams of 4 = 11 teams; cap 2 requires 6 engaged judges; attendance and meals = 44 + 3 + 6 = 53; cost = venue 70 + food 53*4 + judges 6*13 + printing 21 = 381. Schedule explicitly includes the 9-minute break within the 75-minute duration and parallel assignments.
+
+Earlier aggregate probes are retained as failures: one omitted a duplicate aggregate event judge count (now derived from the explicit pool quantity), one omitted the break and emitted a zero vendor commitment, and another mislabeled the venue price as committed cost. Those runs do not count as passes. The configured optional extraction review now compares the draft with the original messages and returns a complete corrected extraction. Both calls, raw responses and usage are recorded; this remains language interpretation, not independent proof of every unseen requirement.
+
+`MODEL_VERIFY_EXTRACTION=1` is enabled in the local .env and documented in .env.example. Full four-run verification with this option is still pending. No paid fallback was enabled. Organizer model eligibility and official submission remain external checks.

@@ -24,6 +24,7 @@ class State:
     review_issues: tuple = ()
     message_dates: tuple = ()
     constraints: tuple = ()
+    review_records: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,8 @@ def apply_update(state, extraction):
     decisions = []
     affected = set()
     blocking = []
+    pending = list(state.review_records)
+    resolved_issues = set()
     constraints = list(state.constraints)
     claims = []
     incoming_constraints = list(extraction.get("constraints", ()))
@@ -80,6 +83,27 @@ def apply_update(state, extraction):
             claims.append(record)
     new_constraints = []
     for constraint in incoming_constraints:
+        source = constraint.get("src") or "(missing source)"
+        if constraint.get("kind", "fact") != "fact":
+            decisions.append(Decision(source, "unresolved", "Constraint amendments require verified authority"))
+            blocking.append(f"{source}: constraint authority could not be verified")
+            continue
+        target = constraint.get("correction_target")
+        if isinstance(target, dict):
+            target = target.get("claim_id")
+        previous = next((item for item in constraints if target and item.get("claim_id") == target), None)
+        if target and previous is None:
+            decisions.append(Decision(source, "unresolved", "Constraint correction target does not match"))
+            blocking.append(f"{source}: constraint correction target does not match")
+            continue
+        if previous is not None:
+            older, newer = parse_message_date(dates.get(source)), parse_message_date(dates.get(previous.get("src")))
+            if older is not None and newer is not None and older < newer:
+                decisions.append(Decision(source, "unresolved", "Retrospective constraint correction needs review"))
+                blocking.append(f"{source}: retrospective constraint correction needs review")
+                continue
+            constraints.remove(previous)
+            decisions.append(Decision(previous.get("src", "unknown"), "superseded", f"Replaced by {source}"))
         if constraint not in constraints:
             constraints.append(dict(constraint))
             new_constraints.append(constraint)
@@ -110,6 +134,7 @@ def apply_update(state, extraction):
             if previous is not None and claim.key == "quantity":
                 unit = claim.unit or previous.get("u") or "items"
                 reason += f"; reported {claim.value} {unit}, approved {previous['v']} {unit}"
+            reason += "; supplier fulfillment requires confirmation"
             decisions.append(Decision(source, "rejected", reason))
             continue
         if claim.kind == "directive":
@@ -123,14 +148,18 @@ def apply_update(state, extraction):
                 continue
         if claim.reason:
             decisions.append(Decision(source, "unresolved", claim.reason))
-            blocking.append(f"{source}: {claim.reason}")
+            issue = f"{source}: {claim.reason}"
+            blocking.append(issue)
+            pending.append({"record": dict(record), "issue": issue})
             continue
 
         previous = active.get(claim.identity)
         target = record.get("correction_target", record.get("corrects"))
         if isinstance(target, dict):
             target = target.get("claim_id") or target
-        matches = target is not None and previous is not None and (
+        review_match = next((item for item in pending
+                             if target and target == item["record"].get("claim_id")), None)
+        matches = review_match is not None or target is not None and previous is not None and (
             target == previous.get("claim_id") or
             ("corrects" in record and target == previous["src"])
         )
@@ -167,6 +196,11 @@ def apply_update(state, extraction):
                 continue
         if previous is not None:
             decisions.append(Decision(previous["src"], "superseded", f"Replaced by {source}"))
+        if review_match is not None:
+            pending.remove(review_match)
+            resolved_issues.add(review_match["issue"])
+            decisions.append(Decision(review_match["record"].get("src", "unknown"), "superseded",
+                                      f"Review resolved by explicit correction {source}"))
         active[claim.identity] = dict(record)
         reason = "Applied verified directive" if claim.kind == "directive" else "Recorded factual claim"
         decisions.append(Decision(source, "accepted", reason))
@@ -190,7 +224,8 @@ def apply_update(state, extraction):
         outcome = "unresolved" if plan.status == "UNVERIFIED" and constraint.get("modality") != "soft" else "accepted"
         decisions.append(Decision(source, outcome, f"Recorded {family} constraint. Plan status: {plan.status}"))
     # Preserve unresolved facts on later runs until the review seam can resolve them.
-    unresolved = tuple(dict.fromkeys((*state.review_issues, *blocking)))
+    unresolved = tuple(issue for issue in dict.fromkeys((*state.review_issues, *blocking))
+                       if issue not in resolved_issues)
     if unresolved:
         plan = replace(plan, status="UNVERIFIED", issues=tuple(dict.fromkeys((*plan.issues, *unresolved))))
     updated = State(
@@ -198,6 +233,6 @@ def apply_update(state, extraction):
         decisions=(*state.decisions, *decisions), plan=plan,
         last_valid=plan if plan.status == "VALID" else state.last_valid, review_issues=unresolved,
         message_dates=tuple(dates.items()),
-        constraints=tuple(constraints),
+        constraints=tuple(constraints), review_records=tuple(pending),
     )
     return UpdateResult(updated, tuple(decisions), tuple(sorted(affected)))

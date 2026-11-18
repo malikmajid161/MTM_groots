@@ -31,3 +31,7 @@ From the integrated checkout, confirm that `git status --porcelain` is empty and
 Run the judging pack and each subsequent message file through the same CLI command. Keep `runtime/` in place between updates. Record the prediction before the designated update. Verify the current plan or its explicit status, the rejection reason, numbered model attempts, and provider-reported token totals.
 
 After the last update, upload `runtime/submission.txt` and preserve a copy. Open `runtime/report.html` for the judges. Use Ismail's provider test evidence and Abdullah's planner acceptance results when deciding whether the integrated commit is ready.
+
+## Backend/UI handoff
+
+Abdullah owns the next UI work. The backend contract remains `UpdateResult` in `contracts.py`; current plan, last-valid plan, decisions, affected areas and full cumulative calls are saved in `runtime/session.json`. Preserve their distinction in the UI. `MODEL_VERIFY_EXTRACTION=1` optionally adds a recorded second extraction review using the same model, deadline and attempt budget. Both calls appear in the trace; unsupported semantics remain unresolved.

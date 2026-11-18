@@ -124,3 +124,30 @@ class StateTests(unittest.TestCase):
             self.assertEqual(saved["last_valid"]["areas"]["venue"]["capacity"], 26)
             capacity = next(item for item in saved["ledger"]["active"] if item["k"] == "capacity")
             self.assertEqual(capacity["v"], 24)
+
+    def test_explicit_constraint_correction_replaces_only_its_target(self):
+        first = {'src': 'limits', 'claim_id': 'limit-1', 'family': 'cost_cap',
+                 'modality': 'hard', 'payload': {'cost_refs': ['food'], 'cap': 245, 'currency': 'PKR'}}
+        initial = apply_update(self.initial, {'constraints': [first]}).state
+        corrected = {**first, 'src': 'correction', 'claim_id': 'limit-2', 'correction_target': 'limit-1',
+                     'payload': {**first['payload'], 'cap': 250}}
+        updated = apply_update(initial, {'constraints': [corrected]}).state
+        self.assertEqual(updated.constraints, (corrected,))
+        self.assertEqual(updated.plan.status, 'VALID')
+        bad = {**corrected, 'kind': 'directive', 'src': 'stranger', 'correction_target': 'limit-2'}
+        result = apply_update(updated, {'constraints': [bad]})
+        self.assertEqual(result.state.constraints, (corrected,))
+        self.assertEqual(result.decisions[0].outcome, 'unresolved')
+
+    def test_explicit_correction_can_resolve_unknown_record_without_erasing_audit(self):
+        unknown = claim('budget', 'expense', 'unknown', 'committed_cost', 'NaN',
+                        src='bad', claim_id='bad:1', currency='PKR')
+        broken = apply_update(self.initial, {'claims': [unknown]}).state
+        self.assertEqual(broken.plan.status, 'UNVERIFIED')
+        corrected = {**unknown, 'src': 'fix', 'claim_id': 'fix:1', 'v': 0,
+                     'correction_target': 'bad:1'}
+        fixed = apply_update(broken, {'claims': [corrected]}).state
+        self.assertEqual(fixed.plan.status, 'VALID', fixed.plan.issues)
+        self.assertEqual(fixed.review_records, ())
+        self.assertIn(unknown, fixed.history)
+        self.assertTrue(any('Review resolved' in item.reason for item in fixed.decisions))

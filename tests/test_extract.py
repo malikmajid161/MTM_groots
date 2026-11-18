@@ -180,3 +180,22 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn('=',operators)
         self.assertNotIn('+=',operators)
         self.assertEqual(self.normalized(dict(self.claim,op='+='))['status'],'UNKNOWN')
+
+    def test_optional_review_is_recorded_and_replaces_draft(self):
+        from unittest.mock import patch
+        seen = []
+        def transport(endpoint, key, payload, timeout):
+            seen.append(payload)
+            value = 941 if len(seen) == 1 else 940
+            row = dict(self.claim, src='s1', v=value)
+            return {'choices':[{'message':{'content':json.dumps({'claims':[row], 'irrelevant':[], 'ambiguous':[]})}}],
+                    'usage':{'total_tokens':17}}
+        budget, trace = RunBudget(), TraceRecorder()
+        client = ModelClient('https://example.invalid', 'mock', 'secret', transport=transport)
+        with patch.dict('os.environ', {'MODEL_VERIFY_EXTRACTION':'1'}):
+            result = extract(self.batch, {}, budget, trace, client)
+        self.assertEqual(result['claims'][0]['v'], 940)
+        self.assertEqual(len(seen), 2)
+        self.assertIn('draft_extraction', json.loads(seen[1]['messages'][1]['content']))
+        self.assertEqual(budget.attempts, 2)
+        self.assertEqual(len(trace.records), 2)

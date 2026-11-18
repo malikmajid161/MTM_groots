@@ -131,3 +131,13 @@ No work or tests are marked complete by creating this task breakdown. Clock time
 - Ismail: run a real provider smoke test with English and Roman Urdu, verify exact model IDs and reported usage, and hand off the supported model configuration.
 - Abdullah: demonstrate a complete plan from aggregate judge data and relative event timing. The current fixed-grid planner expects identified judges and an explicitly timed judging activity. Verify mixed hard constraints and report any unsupported cases.
 - Majid: repeat the judging rehearsal with both changes integrated and a real provider configured. Verify artifacts, call counts, wall times, clean Git, and the candidate submission hash.
+
+## Current ownership and integrated checkpoint — 18 November 2026
+
+The user authorized Ismail to complete remaining backend/integration work across the original boundaries. The latest handoff assigns the UI to **Abdullah**. Ismail should avoid UI changes while Abdullah works. Majid's outstanding integration changes through `05e2bd9` are merged.
+
+Backend checkpoint: 61 automated tests pass. Aggregate judge pools, parallel judge lanes, duration-only schedules, relative activity ordering, per-unit meal planning, percentage buffers, explicit constraint corrections and tracked unknown-claim correction are implemented. Rejected supplier actions preserve the valid approved plan and retain a fulfillment-confirmation concern in the decision.
+
+The four-run original-wording Gemini rehearsal passed with one call per run before extraction review was enabled. A separate aggregate/relative schedule case passed with two recorded calls after enabling `MODEL_VERIFY_EXTRACTION=1`. See ISMAIL_LIVE_RESULTS.md for measured evidence and failed probes. The optional second call shares the existing budget and trace.
+
+Still open: repeat the complete four-run rehearsal with extraction review enabled; record a valid prediction before an update (the attempted `general` prediction was an invalid call tag); inspect Abdullah's UI; organizer model eligibility, final submission destination/upload and teammate explanation rehearsal. Unsupported constraints and unverifiable directive authority remain explicitly unresolved.

@@ -183,3 +183,21 @@ class PlannerTests(unittest.TestCase):
         plan = apply_update(None, {'claims': records}).state.plan
         self.assertEqual(plan.status, 'VALID', plan.issues)
         self.assertEqual(plan.areas['venue']['option'], 'hall')
+
+    def test_relative_activity_order_and_quote_uplift_are_planned(self):
+        records = [row for row in fixture() if row['k'] not in {'start_time', 'end_time', 'duration_minutes'}
+                   and not (row['et'] == 'vendor_item' and row['k'] == 'quantity')]
+        records += [claim('general', 'event', 'event', 'duration_minutes', 43),
+                    claim('schedule', 'activity', 'briefing', 'duration_minutes', 10)]
+        constraints = [
+            {'src': 'rules', 'family': 'time_order', 'modality': 'hard',
+             'payload': {'activities': ['briefing', 'reviews'], 'relation': 'before'}},
+            {'src': 'rules', 'family': 'percentage_uplift', 'modality': 'hard',
+             'payload': {'base': 'people', 'target': 'meals', 'rate': '0.1',
+                         'mode': 'increase', 'rounding': 'ceil', 'unit': 'meals'}},
+        ]
+        plan = apply_update(None, {'claims': records, 'constraints': constraints}).state.plan
+        self.assertEqual(plan.status, 'VALID', plan.issues)
+        self.assertEqual(plan.areas['food']['quantity'], 28)
+        self.assertEqual(plan.areas['schedule']['start'], 'T+10m')
+        self.assertEqual(plan.areas['budget']['total'], '386')
