@@ -1,6 +1,6 @@
 """Apply normalized updates and retain source decisions and the last valid plan."""
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 
 from plan import Plan, build_plan, normalize_claim
@@ -23,6 +23,7 @@ class State:
     last_valid: Plan | None = None
     review_issues: tuple = ()
     message_dates: tuple = ()
+    constraints: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,42 @@ def parse_message_date(value):
 
 
 def apply_update(state, extraction):
+    """Accept the CLI contract or the standalone normalized fixture envelope."""
+    if isinstance(extraction, dict):
+        return update_state(state, extraction)
+
+    from contracts import UpdateResult as ContractResult
+
+    ledger = state or {}
+    previous = State(
+        active=tuple(ledger.get("active", ())),
+        sources=tuple(ledger.get("sources", ())),
+        history=tuple(ledger.get("history", ())),
+        review_issues=tuple(ledger.get("review_issues", ())),
+        message_dates=tuple(ledger.get("message_dates", ())),
+        constraints=tuple(ledger.get("constraints", ())),
+        decisions=tuple(Decision(**item) for item in ledger.get("decisions", ())),
+        plan=Plan(**ledger["plan"]) if ledger.get("plan") else None,
+        last_valid=Plan(**ledger["last_valid"]) if ledger.get("last_valid") else None,
+    )
+    result = update_state(previous, {
+        "claims": extraction.claims,
+        "constraints": extraction.constraints,
+        "irrelevant": extraction.irrelevant_ids,
+        "ambiguous": extraction.ambiguities,
+    })
+    updated = result.state
+    return ContractResult(
+        ledger={"revision": ledger.get("revision", 0) + 1, **asdict(updated)},
+        plan={**updated.plan.areas, "issues": updated.plan.issues},
+        status=updated.plan.status,
+        last_valid=asdict(updated.last_valid) if updated.last_valid else None,
+        decisions=[asdict(decision) for decision in result.decisions],
+        affected_areas=list(result.affected_areas),
+    )
+
+
+def update_state(state, extraction):
     """Apply compact normalized fixtures with externally verified source context.
 
     The fixture adapter expects trusted_scopes and trusted_message_dates to
@@ -111,8 +148,14 @@ def apply_update(state, extraction):
             continue
 
         previous = active.get(claim.identity)
-        target = record.get("corrects")
-        if target is not None and (previous is None or target != previous["src"]):
+        target = record.get("correction_target", record.get("corrects"))
+        if isinstance(target, dict):
+            target = target.get("claim_id") or target
+        matches = target is not None and previous is not None and (
+            target == previous.get("claim_id") or
+            ("corrects" in record and target == previous["src"])
+        )
+        if target is not None and not matches:
             reason = "Correction target does not match the active claim"
             decisions.append(Decision(source, "unresolved", reason))
             blocking.append(f"{source}: {reason}")
@@ -121,7 +164,7 @@ def apply_update(state, extraction):
             older = parse_message_date(dates.get(source))
             newer = parse_message_date(dates.get(previous["src"]))
             if older is not None and newer is not None and older < newer:
-                if target == previous["src"]:
+                if matches:
                     reason = f"Retrospective correction needs review ({older.isoformat()} < {newer.isoformat()})"
                     decisions.append(Decision(source, "unresolved", reason))
                     blocking.append(f"{source}: {reason}")
@@ -153,8 +196,16 @@ def apply_update(state, extraction):
     for source in extraction.get("irrelevant", ()):
         decisions.append(Decision(source, "ignored", "Irrelevant message"))
     for source in extraction.get("ambiguous", ()):
+        if isinstance(source, dict):
+            source = source.get("src") or "(missing source)"
         decisions.append(Decision(source, "unresolved", "Extraction reported ambiguous content"))
         blocking.append(f"{source}: ambiguous content")
+    for constraint in extraction.get("constraints", ()):
+        source = constraint.get("src") or "(missing source)"
+        family = constraint.get("family") or "unknown"
+        reason = f"Constraint needs evaluation: {family}"
+        decisions.append(Decision(source, "unresolved", reason))
+        blocking.append(f"{source}: {reason}")
     if blocking:
         affected.update(DEPENDENCIES["general"])
     plan = build_plan(normalize_claim(record) for record in active.values()) if affected or state.plan is None else state.plan
@@ -167,5 +218,6 @@ def apply_update(state, extraction):
         decisions=(*state.decisions, *decisions), plan=plan,
         last_valid=plan if plan.status == "VALID" else state.last_valid, review_issues=unresolved,
         message_dates=tuple(dates.items()),
+        constraints=(*state.constraints, *extraction.get("constraints", ())),
     )
     return UpdateResult(updated, tuple(decisions), tuple(sorted(affected)))

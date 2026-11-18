@@ -1,4 +1,11 @@
+import json
+import contextlib
+import io
+import tempfile
 import unittest
+from dataclasses import asdict
+from importlib.util import find_spec
+from pathlib import Path
 
 from state import apply_update
 from test_plan import claim, fixture
@@ -76,3 +83,45 @@ class StateTests(unittest.TestCase):
         result = apply_update(initial, {"claims": [record]})
         self.assertEqual(result.decisions[-1].outcome, "accepted")
         self.assertEqual(result.state.plan.status, "INFEASIBLE")
+
+    @unittest.skipUnless(find_spec("contracts"), "Shared contract is on the integration branch")
+    def test_shared_contract_json_round_trip_and_unresolved_constraint(self):
+        from contracts import Extraction
+
+        initial = apply_update({}, Extraction(claims=fixture()))
+        self.assertEqual(initial.status, "VALID")
+        ledger = json.loads(json.dumps(asdict(initial)["ledger"]))
+        constraint = {"src": "update", "modality": "hard", "family": "availability",
+                      "payload": {"resource": "m"}}
+        result = apply_update(ledger, Extraction(constraints=[constraint]))
+        self.assertEqual(result.ledger["revision"], 2)
+        self.assertEqual(result.status, "UNVERIFIED")
+        self.assertEqual(result.last_valid["status"], "VALID")
+        self.assertEqual(result.ledger["constraints"], (constraint,))
+        self.assertEqual(result.decisions[0]["source"], "update")
+
+    @unittest.skipUnless(find_spec("main"), "CLI is on the integration branch")
+    def test_cli_persists_accepted_fact_and_separate_last_valid_plan(self):
+        from contracts import Extraction
+        from main import run
+
+        def extract(batch, ledger, budget, record):
+            if not ledger:
+                return Extraction(claims=fixture())
+            return Extraction(claims=[
+                claim("venue", "venue_option", "hall", "capacity", 24, src=batch.source_id)
+            ])
+
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory)
+            file = root / "input.txt"
+            runtime = root / "runtime"
+            file.write_text("initial", encoding="utf-8")
+            self.assertEqual(run(file, runtime, extract, apply_update), 0)
+            file.write_text("credible venue capacity reduction", encoding="utf-8")
+            self.assertEqual(run(file, runtime, extract, apply_update), 0)
+            saved = json.loads((runtime / "session.json").read_text(encoding="utf-8"))["result"]
+            self.assertEqual(saved["status"], "INFEASIBLE")
+            self.assertEqual(saved["last_valid"]["areas"]["venue"]["capacity"], 26)
+            capacity = next(item for item in saved["ledger"]["active"] if item["k"] == "capacity")
+            self.assertEqual(capacity["v"], 24)
