@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import monotonic
 
-from contracts import Extraction, InputBatch, ModelCall, RunBudget
+from contracts import Extraction, InputBatch, ModelCall, RunBudget, UpdateResult
 from report import render
 
 
@@ -135,24 +135,61 @@ def extract_for_cli(batch, context, budget, record):
 
     source = {"src": batch.source_id, "digest": batch.source_id,
               "path": batch.path, "text": batch.text}
-    result = extract(source, context, ProviderBudget(), ProviderRecorder())
+    result = extract(source, {
+        "active_claims": context.get("active", []),
+    }, ProviderBudget(), ProviderRecorder())
     if result["status"] == "UNRESOLVED":
         raise ValueError("Extraction response unresolved: " + result["ambiguous"][0]["reason"])
     return Extraction(
         claims=result["claims"],
         ambiguities=result["ambiguous"],
         irrelevant_ids=result["irrelevant"],
+        sources={batch.source_id: batch.text},
     )
 
 
-def main():
+def plan_for_cli(ledger, extraction):
+    from plan import Plan
+    from state import Decision, State, apply_update
+
+    saved = dict(ledger)
+    for key in ("plan", "last_valid"):
+        if saved.get(key) is not None:
+            plan = saved[key]
+            saved[key] = Plan(plan["status"], plan["areas"], tuple(plan["issues"]))
+    saved["decisions"] = tuple(Decision(**item) for item in saved.get("decisions", ()))
+    claims = []
+    for item in extraction.claims:
+        claim = dict(item)
+        if claim.get("k") == "unit_price" and not claim.get("scope") and claim.get("price_basis"):
+            claim["scope"] = claim["price_basis"]
+        if claim.get("op") == "==":
+            claim["op"] = "="
+        claims.append(claim)
+    claims.extend(extraction.constraints)
+    result = apply_update(State(**saved), {
+        "claims": claims,
+        "sources": extraction.sources,
+        "irrelevant": extraction.irrelevant_ids,
+        "ambiguous": [item.get("src", "(missing source)") for item in extraction.ambiguities],
+    })
+    current = result.state.plan
+    return UpdateResult(
+        ledger=asdict(result.state),
+        plan={"areas": current.areas, "issues": current.issues},
+        status=current.status,
+        last_valid=asdict(result.state.last_valid) if result.state.last_valid else None,
+        decisions=[asdict(item) for item in result.decisions],
+        affected_areas=list(result.affected_areas),
+    )
+
+
+def main(planner=plan_for_cli):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("file", type=Path)
     args = parser.parse_args()
     try:
-        from state import apply_update
-
-        return run(args.file, Path("runtime"), extract_for_cli, apply_update)
+        return run(args.file, Path("runtime"), extract_for_cli, planner)
     except (ImportError, OSError, ValueError) as error:
         print(f"Planner could not run: {error}", file=sys.stderr)
         return 1

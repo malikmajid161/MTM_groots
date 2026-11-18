@@ -50,6 +50,7 @@ class Extraction:
     constraints: list[Constraint] = field(default_factory=list)
     ambiguities: list[dict] = field(default_factory=list)
     irrelevant_ids: list[str] = field(default_factory=list)
+    sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

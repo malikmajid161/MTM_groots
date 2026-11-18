@@ -36,13 +36,18 @@ class CommandTests(unittest.TestCase):
                 "                        'VALID', decisions=decisions)\n",
                 encoding="utf-8",
             )
+            (root / "mock_cli.py").write_text(
+                "from main import main\nfrom state import apply_update\n"
+                "raise SystemExit(main(apply_update))\n",
+                encoding="utf-8",
+            )
             environment = {**os.environ, "PYTHONIOENCODING": "utf-8"}
             for number, name in enumerate(("pack", "venue", "invalid", "attendance"), 1):
                 if name == "venue":
                     (root / "runtime" / "predicted_tags.txt").write_text("reading", encoding="utf-8")
                 source = repo / "tests" / "fixtures" / f"rehearsal_{name}.txt"
                 result = subprocess.run(
-                    [sys.executable, "main.py", str(source)],
+                    [sys.executable, "mock_cli.py", str(source)],
                     cwd=root, env=environment, encoding="utf-8",
                     capture_output=True, timeout=120 if number == 1 else 60,
                 )
