@@ -118,10 +118,10 @@ Remaining issues / next consumer:
 
 | Iteration | Ismail | Abdullah | Majid | Integrated HEAD / demo evidence |
 |---|---|---|---|---|
-| I0 | TODO | TODO | TODO | — |
-| I1 | TODO | TODO | TODO | — |
-| I2 | TODO | TODO | TODO | — |
-| I3 | TODO | TODO | TODO | — |
+| I0 | TODO | TODO | REVIEW | Proposed integration contracts pushed as `e0effec`; teammate agreement and integration pending. |
+| I1 | TODO | TODO | REVIEW | CLI and cumulative reporting pushed as `72c8045`; mocked CLI tests pass. |
+| I2 | TODO | TODO | REVIEW | State preservation and prediction tracking pushed as `c97bd1e`; live adapter integration pending. |
+| I3 | TODO | TODO | IN PROGRESS | `954d2f4` passed the mocked initial pack and three-update CLI rehearsal; timed live rehearsal pending. |
 | I4 | TODO | TODO | TODO | — |
 
 No work or tests are marked complete by creating this task breakdown. Clock times are the brief's build window; if starting later, preserve the 13:25 freeze and shorten scope explicitly rather than shifting the deadline.
