@@ -20,3 +20,15 @@ class PlannerIntegrationTests(unittest.TestCase):
         self.assertEqual(result.plan["areas"]["food"]["quantity"], 27)
         self.assertIn("reported 12 items, approved 27 items", result.decisions[0]["reason"])
         json.dumps(asdict(result), allow_nan=False)
+
+    def test_date_header_blocks_stale_cost_update(self):
+        initial = plan_for_cli({}, Extraction(claims=fixture(), sources={
+            "initial": "From: Finance\nDate: 2026-12-03T10:00:00+05:00\n\nInitial facts"
+        }))
+        older = claim("budget", "expense", "existing", "committed_cost", 47,
+                      src="older", currency="PKR")
+        updated = plan_for_cli(initial.ledger, Extraction(claims=[older], sources={
+            "older": "From: Finance\nDate: 2026-12-01T10:00:00+05:00\n\nEarlier facts"
+        }))
+        self.assertEqual(updated.decisions[0]["outcome"], "superseded")
+        self.assertEqual(updated.plan["areas"]["budget"]["total"], "377")

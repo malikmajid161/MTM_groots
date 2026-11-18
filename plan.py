@@ -38,6 +38,52 @@ class Claim:
         return self.area, self.entity_type, self.entity_id, self.key, self.scope
 
 
+def feature_set(value):
+    names = [value] if isinstance(value, str) else value
+    if not isinstance(names, (list, tuple)) or not names:
+        return set()
+    if any(not isinstance(name, str) or not name.strip() for name in names):
+        return set()
+    return {name.strip().casefold() for name in names}
+
+
+def parse_window(value):
+    if not isinstance(value, dict):
+        return None
+    start = datetime.fromisoformat(value.get("start"))
+    end = datetime.fromisoformat(value.get("end"))
+    if start.utcoffset() is None or end.utcoffset() is None or start >= end:
+        return None
+    return start, end
+
+
+def assign_slots(engaged, slots, cap, windows, teams):
+    if not any(windows[judge] for judge in engaged):
+        return [(index, engaged[index // cap]) for index in range(teams)]
+    seats = [(judge, index) for judge in engaged for index in range(min(cap, len(slots)))]
+    occupied = {}
+
+    def assign(index, visited):
+        start, end = slots[index]
+        for seat in seats:
+            window = windows[seat[0]]
+            if seat in visited or (window and not (window[0] <= start and end <= window[1])):
+                continue
+            visited.add(seat)
+            if seat not in occupied or assign(occupied[seat], visited):
+                occupied[seat] = index
+                return True
+        return False
+
+    for index in range(len(slots)):
+        if len(occupied) == teams:
+            break
+        assign(index, set())
+    if len(occupied) != teams:
+        return None
+    return sorted((index, judge) for (judge, _), index in occupied.items())
+
+
 def normalize_claim(record):
     """Keep unsupported or incomplete records visible with a reason."""
     source = record.get("src")
@@ -86,8 +132,15 @@ def normalize_claim(record):
                 raise ValueError
         except (TypeError, ValueError):
             reason = "expected an ISO datetime with an explicit offset"
-    elif key in {"availability_window", "required_feature"}:
-        reason = "claim needs a supported availability or feature evaluator"
+    elif key == "required_feature":
+        if entity_type not in {"event", "venue_option"} or not feature_set(value):
+            reason = "expected venue feature names on an event or venue"
+    elif key == "availability_window":
+        try:
+            if entity_type not in {"judge", "venue_option"} or not parse_window(value):
+                raise ValueError
+        except (TypeError, ValueError):
+            reason = "expected offset-aware judge or venue availability bounds"
     return Claim(source, area, entity_type, entity_id, key, value, scope, currency, kind, reason, unit)
 
 @dataclass(frozen=True)
@@ -170,18 +223,20 @@ def build_plan(claims):
     if elapsed <= timedelta(0) or (duration is not None and elapsed != timedelta(minutes=duration)):
         return Plan("INFEASIBLE", areas, tuple(issues + ["Judging times contradict the required duration."]))
     if teams > slots:
-        issues.append(f"{teams} teams need more than {slots} sequential judging slots")
+        issues.append(f"{teams} teams need more than {slots} supported sequential judging slots")
     judges = select("judge")
     if len(judges) != available:
         issues.append(f"{available} judges reported, {len(judges)} identified")
     required = set()
     judge_prices = {}
+    judge_windows = {}
     for judge_id, group in judges:
         rule = read(group, "engagement_rule")
         if rule is None:
             issues.append(f"{judge_id}: engagement terms are missing")
         if rule == "required":
             required.add(judge_id)
+        judge_windows[judge_id] = parse_window(read(group, "availability_window"))
         judge_prices[judge_id] = cost(group, "unit_price", {
             "fixed": 1, "per_person": 1, "per_item": 1
         })
@@ -199,7 +254,15 @@ def build_plan(claims):
         if value is None:
             issues.append(f"{name}: a capacity or meal quantity is missing")
 
+    required_features = feature_set(read(event, "required_feature"))
+    venue_features = {name: read(group, "required_feature") for name, group in venues}
+    venue_windows = {name: parse_window(read(group, "availability_window")) for name, group in venues}
     optional = sorted(set(judge_prices) - required)
+    step = timedelta(minutes=team_minutes)
+    if slots > 10_000:
+        return Plan("UNVERIFIED", areas, tuple(issues + ["Judging slot search exceeds the supported range."]))
+    judging_slots = [(start + i * step, start + (i + 1) * step) for i in range(slots)]
+    best_assignments = []
     assignments_possible = teams <= slots and (teams == 0 or judge_cap > 0)
     if judge_cap:
         minimum = (teams + judge_cap - 1) // judge_cap
@@ -211,8 +274,20 @@ def build_plan(claims):
             break
         for extra in combinations(optional, size):
             engaged = sorted(required.union(extra))
+            assigned = assign_slots(engaged, judging_slots, judge_cap, judge_windows, teams)
+            if assigned is None:
+                continue
             people = students + staff + len(engaged)
             for venue_id, venue in venues:
+                features = venue_features[venue_id]
+                if required_features and features is None:
+                    issues.append(f"{venue_id}: required venue features are unverified")
+                    continue
+                if not required_features <= feature_set(features):
+                    continue
+                window = venue_windows[venue_id]
+                if window and not (window[0] <= start and end <= window[1]):
+                    continue
                 venue_price = cost(venue, "unit_price", {"fixed": 1, "per_person": people})
                 capacity = venue_capacities[venue_id]
                 for meal_id, meal in meals:
@@ -233,6 +308,9 @@ def build_plan(claims):
                     rank = (len(engaged), total, venue_id, meal_id, engaged)
                     if total <= limit and (best is None or rank < best):
                         best = rank
+                        best_assignments = assigned
+        if best is not None:
+            break
 
     issues.extend(f"{claim.source}: unsupported placement of {claim.key}"
                   for claim in claims if not claim.reason and claim.identity not in used)
@@ -244,12 +322,12 @@ def build_plan(claims):
 
     _, total, venue_id, meal_id, engaged = best
     assignments = []
-    for index in range(teams):
-        slot_start = start + timedelta(minutes=index * team_minutes)
+    for index, (slot, judge) in enumerate(best_assignments):
+        slot_start, slot_end = judging_slots[slot]
         assignments.append({
-            "team": index + 1, "judge": engaged[index // judge_cap],
+            "team": index + 1, "judge": judge,
             "start": slot_start.isoformat(),
-            "end": (slot_start + timedelta(minutes=team_minutes)).isoformat(),
+            "end": slot_end.isoformat(),
         })
     people = students + staff + len(engaged)
     areas["venue"] = {"option": venue_id, "people": people, "capacity": venue_capacities[venue_id]}

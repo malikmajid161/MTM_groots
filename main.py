@@ -7,6 +7,8 @@ import re
 import sys
 from copy import deepcopy
 from dataclasses import asdict
+from email.utils import parsedate_to_datetime
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import monotonic
@@ -165,6 +167,32 @@ def extract_for_cli(batch, context, budget, record):
     )
 
 
+def source_dates(sources):
+    dates = {}
+    for source, text in sources.items():
+        lines = text.splitlines()
+        if not lines or not lines[0].lower().startswith("from:"):
+            continue
+        for line in lines[1:]:
+            field, separator, value = line.partition(":")
+            if not separator or field.lower() not in {"date", "to", "subject"}:
+                break
+            if field.lower() != "date":
+                continue
+            value = value.strip()
+            try:
+                try:
+                    date = datetime.fromisoformat(value)
+                except ValueError:
+                    date = parsedate_to_datetime(value)
+                if date.utcoffset() is not None:
+                    dates[source] = date.isoformat()
+            except (TypeError, ValueError, OverflowError):
+                pass
+            break
+    return dates
+
+
 def plan_for_cli(ledger, extraction):
     from plan import Plan
     from state import Decision, State, apply_update
@@ -187,6 +215,7 @@ def plan_for_cli(ledger, extraction):
     result = apply_update(State(**saved), {
         "claims": claims,
         "sources": extraction.sources,
+        "trusted_message_dates": source_dates(extraction.sources),
         "irrelevant": extraction.irrelevant_ids,
         "ambiguous": [item.get("src", "(missing source)") for item in extraction.ambiguities],
     })

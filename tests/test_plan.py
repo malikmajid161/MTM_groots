@@ -66,3 +66,22 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(state.plan.status, "INFEASIBLE", state.plan.issues)
                 self.assertIn(new, state.active)
                 self.assertEqual(state.last_valid, initial.plan)
+
+    def test_venue_feature_and_late_judge(self):
+        records = fixture() + [
+            claim("venue", "event", "event", "required_feature", "Ramp"),
+            claim("venue", "venue_option", "hall", "required_feature", ["ramp"]),
+            claim("judging", "judge", "n", "availability_window", {
+                "start": "2026-12-01T10:22:00+05:00",
+                "end": "2026-12-01T10:33:00+05:00",
+            }),
+        ]
+        result = apply_update(None, {"claims": records}).state.plan
+        self.assertEqual(result.status, "VALID", result.issues)
+        slots = result.areas["judging"]["assignments"]
+        self.assertEqual(slots[-1]["judge"], "n")
+        self.assertEqual(slots[-1]["start"], "2026-12-01T10:22:00+05:00")
+        records.pop(-2)
+        unknown = apply_update(None, {"claims": records}).state.plan
+        self.assertEqual(unknown.status, "UNVERIFIED")
+        self.assertTrue(any("required venue features are unverified" in issue for issue in unknown.issues))
