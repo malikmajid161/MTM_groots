@@ -68,6 +68,12 @@ def run(path, runtime, extract, apply_update):
         return run_session(batch, runtime, extract, apply_update, started)
 
 
+def plan_snapshot(result):
+    if result is None:
+        return None
+    return {key: result.get(key) for key in ("status", "plan", "last_valid")}
+
+
 def run_session(batch, runtime, extract, apply_update, started):
     session_path = runtime / "session.json"
     session = (
@@ -84,6 +90,7 @@ def run_session(batch, runtime, extract, apply_update, started):
         "source_path": batch.path,
         "status": "completed",
         "calls": calls,
+        "before": plan_snapshot(session["result"]),
     }
 
     prediction_path = runtime / "predicted_tags.txt"
@@ -129,6 +136,9 @@ def run_session(batch, runtime, extract, apply_update, started):
 
     run_log["attempts"] = budget.attempts
     run_log["seconds_before_reporting"] = round(monotonic() - started, 3)
+    run_log["after"] = plan_snapshot(session["result"])
+    if batch.source_id not in session["sources"]:
+        run_log["input_text"] = batch.text
     session["runs"].append(run_log)
     plain, html = render(session)
     atomic_write(session_path, json.dumps(session, ensure_ascii=False, allow_nan=False))

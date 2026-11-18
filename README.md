@@ -71,6 +71,8 @@ python main.py path/to/initial_pack.txt
 python main.py path/to/update.txt
 ```
 
+Open `runtime/report.html` to review the plan, AI traces and updates in Abdullah’s dashboard. Its upload button loads saved `session.json` files.
+
 Explicit `From:` headers separate messages. Dates can appear on a separate `Date:` header or inline as `From: sender | Date: timestamp`. Comparable dates help prevent older facts replacing newer ones. A sender's stated title does not authenticate authority.
 
 CSV, structured JSON, PDF and ZIP are not supported as direct structured inputs. Extract message `.txt` files from a ZIP before running them. The expected-results document supplied with a test pack is for independent checking and must stay out of model input.

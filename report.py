@@ -2,6 +2,7 @@
 
 import json
 from html import escape
+from pathlib import Path
 
 
 def pretty(value):
@@ -25,7 +26,8 @@ def sections(session):
         for decision in decisions if decision.get("outcome") in {"rejected", "unresolved"}
     ])
     for run in session["runs"]:
-        details = {key: value for key, value in run.items() if key != "calls"}
+        details = {key: value for key, value in run.items()
+                   if key not in {"calls", "before", "after", "input_text"}}
         yield f"Run {run['number']}", pretty(details)
         for call in run["calls"]:
             yield f"Model call {call['number']} | {call['model']} | {call['area']}", pretty(call)
@@ -42,21 +44,12 @@ def sections(session):
 def render(session):
     blocks = list(sections(session))
     plain = "\n\n".join(f"{title}\n{content}" for title, content in blocks) + "\n"
-    body = "\n".join(
-        f"<details><summary>{escape(title)}</summary><pre>{escape(content)}</pre></details>"
-        if title.startswith("Model call ") else
-        f"<section><h2>{escape(title)}</h2><pre>{escape(content)}</pre></section>"
-        for title, content in blocks
-    )
-    html = (
-        '<!doctype html><html lang="en"><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Hackathon plan and trace</title><style>'
-        'body{font:1rem system-ui;max-width:75rem;margin:2rem auto;padding:0 1rem}'
-        'pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;padding:1rem}'
-        '</style><main><h1>Hackathon plan and trace</h1>' + body + '</main></html>'
-    )
-    return plain, html
+    template = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
+    script = Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8")
+    # Keep untrusted strings in inert text. The dashboard uses textContent.
+    data = escape(json.dumps(session, ensure_ascii=False, allow_nan=False), quote=False)
+    html = template.replace("<!-- DASHBOARD_SCRIPT -->", script, 1)
+    return plain, html.replace("<!-- SESSION_DATA -->", data, 1)
 
 
 def readable_lines(value, indent=0):
