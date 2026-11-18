@@ -90,6 +90,12 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(requests, list(inputs))
                 self.assertEqual([run["attempts"] for run in session["runs"]], [1] * 4)
                 self.assertEqual(session["runs"][2]["decisions"][0]["outcome"], "rejected")
+                initial, price, rejection, _ = session["runs"]
+                self.assertIsNone(initial["before"])
+                self.assertEqual(price["before"], initial["after"])
+                self.assertEqual(rejection["before"], price["after"])
+                self.assertEqual(rejection["after"]["last_valid"], rejection["before"]["last_valid"])
+                self.assertEqual(rejection["after"]["plan"]["areas"]["food"]["quantity"], 27)
                 plan = session["result"]["plan"]["areas"]
                 self.assertEqual(plan["food"]["quantity"], 27)
                 self.assertEqual(plan["budget"]["total"], "381")

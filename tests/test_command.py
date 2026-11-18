@@ -12,7 +12,7 @@ class CommandTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("main.py", "report.py", "contracts.py"):
+            for name in ("main.py", "report.py", "contracts.py", "dashboard.html", "dashboard.js"):
                 copy2(repo / name, root / name)
             (root / "extract.py").write_text(
                 "def extract(batch, context, budget, record):\n"
@@ -58,5 +58,7 @@ class CommandTests(unittest.TestCase):
             self.assertIn("74 < 104 meals", submission)
             self.assertIn("Total tokens: unavailable for 4 of 4 calls", submission)
             html = (root / "runtime" / "report.html").read_text(encoding="utf-8")
-            self.assertIn("Rejected and unresolved messages", html)
+            self.assertIn("Traces", html)
             self.assertIn("74 &lt; 104 meals", html)
+            self.assertNotIn("<!-- SESSION_DATA -->", html)
+            self.assertNotIn("<!-- DASHBOARD_SCRIPT -->", html)

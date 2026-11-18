@@ -12,6 +12,8 @@ python main.py path/to/messages.txt
 
 Use the same command for the initial pack and every update. An existing session receives an update regardless of message count. Archive any submission evidence before moving the generated runtime directory aside to start a new session.
 
+Open `runtime/report.html` to review the plan, API traces, and updates. The report opens in dark mode by default.
+
 ## Integration
 
 The integration branch is `main`. Majid works on `codex/majid`. The extractor calls `budget.reserve_attempt()` immediately before each provider request and records every attempt, including errors, with the recorder. Use the remaining budget for the provider timeout. The planner receives a JSON-compatible ledger and the current extraction. Keep source references stable and preserve accepted facts even when a current plan cannot be verified.
