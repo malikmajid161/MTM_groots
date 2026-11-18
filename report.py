@@ -11,12 +11,17 @@ def pretty(value):
 def sections(session):
     result = session.get("result") or {}
     latest = session["runs"][-1]["status"]
-    yield ("Saved plan before failed run" if latest == "failed" else "Current plan"), pretty({
-        "status": result.get("status", "UNVERIFIED"),
-        "plan": result.get("plan"),
-        "last_valid": result.get("last_valid"),
-        "latest_run": session["runs"][-1]["status"],
-    })
+    title = "Saved plan before failed run" if latest == "failed" else "Current plan"
+    yield title, pretty({"status": result.get("status", "UNVERIFIED"), "plan": result.get("plan")})
+    if result.get("last_valid") is not None and result.get("status") != "VALID":
+        yield "Last valid plan", pretty(result["last_valid"])
+    decisions = [
+        {"run": run["number"], **decision}
+        for run in session["runs"] for decision in run.get("decisions", [])
+    ]
+    yield "Rejected and unresolved messages", pretty([
+        decision for decision in decisions if decision.get("outcome") in {"rejected", "unresolved"}
+    ])
     for run in session["runs"]:
         details = {key: value for key, value in run.items() if key != "calls"}
         yield f"Run {run['number']}", pretty(details)
@@ -36,6 +41,8 @@ def render(session):
     blocks = list(sections(session))
     plain = "\n\n".join(f"{title}\n{content}" for title, content in blocks) + "\n"
     body = "\n".join(
+        f"<details><summary>{escape(title)}</summary><pre>{escape(content)}</pre></details>"
+        if title.startswith("Model call ") else
         f"<section><h2>{escape(title)}</h2><pre>{escape(content)}</pre></section>"
         for title, content in blocks
     )
