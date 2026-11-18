@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 from copy import deepcopy
 from dataclasses import asdict
@@ -110,6 +111,19 @@ def run(path, runtime, extract, apply_update):
     return int(run_log["status"] == "failed")
 
 
+def message_sources(batch):
+    # Only split at explicit, unquoted headers. Preserve any leading preamble.
+    headers = list(re.finditer(r"(?im)^From:[ \t]+[^\r\n]+", batch.text))
+    starts = [0, *(match.start() for match in headers if match.start())]
+    if len(starts) == 1:
+        return {batch.source_id: batch.text}
+    ends = [*starts[1:], len(batch.text)]
+    return {
+        f"{batch.source_id}:{index}": batch.text[start:end]
+        for index, (start, end) in enumerate(zip(starts, ends), 1)
+    }
+
+
 def extract_for_cli(batch, context, budget, record):
     from extract import extract
 
@@ -133,8 +147,11 @@ def extract_for_cli(batch, context, budget, record):
                 error=row["error"],
             ))
 
+    messages = message_sources(batch)
     source = {"src": batch.source_id, "digest": batch.source_id,
               "path": batch.path, "text": batch.text}
+    if len(messages) > 1:
+        source["messages"] = messages
     result = extract(source, {
         "active_claims": context.get("active", []),
     }, ProviderBudget(), ProviderRecorder())
@@ -144,7 +161,7 @@ def extract_for_cli(batch, context, budget, record):
         claims=result["claims"],
         ambiguities=result["ambiguous"],
         irrelevant_ids=result["irrelevant"],
-        sources={batch.source_id: batch.text},
+        sources=messages,
     )
 
 
