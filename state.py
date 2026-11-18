@@ -22,6 +22,7 @@ class State:
     plan: Plan | None = None
     last_valid: Plan | None = None
     review_issues: tuple = ()
+    message_dates: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -41,25 +42,28 @@ DEPENDENCIES = {
 }
 
 
-def trusted_date(record):
-    if record.get("message_date_trusted") is not True:
-        return None
+def parse_message_date(value):
     try:
-        date = datetime.fromisoformat(record["message_date"])
+        date = datetime.fromisoformat(value)
         return date if date.utcoffset() is not None else None
-    except (KeyError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 
 def apply_update(state, extraction):
     """Apply compact normalized fixtures with externally verified source context.
 
-    The fixture adapter expects trusted_scopes and trusted message dates to
+    The fixture adapter expects trusted_scopes and trusted_message_dates to
     come from the input envelope supplied by the caller.
     """
     state = State() if state is None else state
     active = {normalize_claim(record).identity: record for record in state.active}
     sources = dict(state.sources)
+    dates = dict(state.message_dates)
+    for source, raw_date in extraction.get("trusted_message_dates", {}).items():
+        date = parse_message_date(raw_date)
+        if date is not None:
+            dates.setdefault(source, date.isoformat())
     history = list(state.history)
     decisions = []
     affected = set()
@@ -69,11 +73,10 @@ def apply_update(state, extraction):
             raise ValueError(f"Source ID already belongs to different evidence: {source}")
         sources[source] = message
 
-    seen_before = tuple(state.history)
     for record in extraction.get("claims", ()):
         claim = normalize_claim(record)
         source = claim.source or "(missing source)"
-        if record in seen_before or record in history:
+        if record in history:
             decisions.append(Decision(source, "ignored", "Duplicate claim"))
             continue
         history.append(dict(record))
@@ -84,28 +87,41 @@ def apply_update(state, extraction):
             decisions.append(Decision(source, "unresolved", "Warning requires assessment"))
             blocking.append(f"{source}: warning requires assessment")
             continue
-        if claim.kind in {"directive", "reported_action"}:
+        if claim.kind == "reported_action":
+            reason = "A reported action does not authorize an amendment"
+            previous = active.get(claim.identity) if not claim.reason else None
+            if previous is not None and claim.key == "quantity":
+                unit = claim.unit or previous.get("u") or "items"
+                reason += f"; reported {claim.value} {unit}, approved {previous['v']} {unit}"
+            decisions.append(Decision(source, "rejected", reason))
+            blocking.append(f"{source}: fulfillment review required. {reason}")
+            continue
+        if claim.kind == "directive":
             scopes = extraction.get("trusted_scopes", {}).get(source)
             if not scopes:
-                outcome, reason = "unresolved", "Authority could not be verified"
-            elif claim.area not in scopes:
-                outcome, reason = "rejected", f"Verified scopes {sorted(scopes)} exclude {claim.area}"
-            else:
-                outcome, reason = "unresolved", "Binding actions require constraint and authorization review"
-            decisions.append(Decision(source, outcome, reason))
-            if claim.kind == "reported_action":
-                blocking.append(f"{source}: reported action requires fulfillment review")
-            continue
+                decisions.append(Decision(source, "unresolved", "Authority could not be verified"))
+                continue
+            if claim.area not in scopes:
+                reason = f"Verified scopes {sorted(scopes)} exclude {claim.area}"
+                decisions.append(Decision(source, "rejected", reason))
+                continue
         if claim.reason:
             decisions.append(Decision(source, "unresolved", claim.reason))
             blocking.append(f"{source}: {claim.reason}")
             continue
 
         previous = active.get(claim.identity)
+        target = record.get("corrects")
+        if target is not None and (previous is None or target != previous["src"]):
+            reason = "Correction target does not match the active claim"
+            decisions.append(Decision(source, "unresolved", reason))
+            blocking.append(f"{source}: {reason}")
+            continue
         if previous is not None:
-            older, newer = trusted_date(record), trusted_date(previous)
+            older = parse_message_date(dates.get(source))
+            newer = parse_message_date(dates.get(previous["src"]))
             if older is not None and newer is not None and older < newer:
-                if record.get("corrects") == previous["src"]:
+                if target == previous["src"]:
                     reason = f"Retrospective correction needs review ({older.isoformat()} < {newer.isoformat()})"
                     decisions.append(Decision(source, "unresolved", reason))
                     blocking.append(f"{source}: {reason}")
@@ -113,9 +129,25 @@ def apply_update(state, extraction):
                 reason = f"Stale update {older.isoformat()} < {newer.isoformat()} from {previous['src']}"
                 decisions.append(Decision(source, "superseded", reason))
                 continue
+        if claim.kind == "directive":
+            candidate = active.copy()
+            candidate[claim.identity] = record
+            proposed = build_plan(normalize_claim(item) for item in candidate.values())
+            if state.review_issues or blocking or proposed.status != "VALID":
+                outcome = "rejected" if proposed.status == "INFEASIBLE" else "unresolved"
+                evidence = " / ".join(proposed.issues) or "Existing claims require review"
+                if claim.area == "food" and claim.key == "quantity" and state.plan is not None:
+                    required = state.plan.areas["food"].get("required")
+                    if required is not None and claim.value < required:
+                        unit = claim.unit or "items"
+                        evidence += f" Requested {claim.value} {unit}; current plan requires {required} {unit}."
+                decisions.append(Decision(source, outcome, f"Amendment could not be applied. {evidence}"))
+                continue
+        if previous is not None:
             decisions.append(Decision(previous["src"], "superseded", f"Replaced by {source}"))
         active[claim.identity] = dict(record)
-        decisions.append(Decision(source, "accepted", "Recorded factual claim"))
+        reason = "Applied verified directive" if claim.kind == "directive" else "Recorded factual claim"
+        decisions.append(Decision(source, "accepted", reason))
         affected.update(DEPENDENCIES[claim.area])
 
     for source in extraction.get("irrelevant", ()):
@@ -134,5 +166,6 @@ def apply_update(state, extraction):
         active=tuple(active.values()), sources=tuple(sources.items()), history=tuple(history),
         decisions=(*state.decisions, *decisions), plan=plan,
         last_valid=plan if plan.status == "VALID" else state.last_valid, review_issues=unresolved,
+        message_dates=tuple(dates.items()),
     )
     return UpdateResult(updated, tuple(decisions), tuple(sorted(affected)))
