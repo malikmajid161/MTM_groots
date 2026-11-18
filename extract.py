@@ -31,7 +31,9 @@ Each source has its own src. Use the src of the message that states the claim. E
 area: venue/schedule/food/judging/budget/general.
 et: venue_option/vendor_item/judge/staff/expense/event/activity/other.
 k: student_count/team_size/staff_count/judge_count/capacity/unit_price/quantity/budget_cap/duration_minutes/start_time/end_time/judge_team_cap/minutes_per_team/availability_window/required_feature/committed_cost/engagement_rule/other.
-Canonical k omit family. For other preserve raw_text and raw_key, optional family and payload. Supported payloads:
+Emit counts and monetary amounts as JSON numbers with explicit units. Canonical k omit family.
+For venue features, use required_feature on the event for requirements and on a venue for evidenced features. Use an empty venue list only for explicit absence. For concrete judge/venue availability use availability_window with v containing offset-aware ISO start and end. Do not assign a timezone or time from guesswork.
+For other preserve raw_text and raw_key, optional family and payload. Supported payloads:
 time_order: activities (references),relation; duration/interval/gap and units when applicable.
 count_bound: target,op,bound,unit. availability: resource,windows,time_basis.
 cost_cap: scope,cost_refs,cap,currency. percentage_uplift: base,rate,target,mode,rounding,unit.
@@ -107,7 +109,12 @@ def normalize(data, batch):
             c['status'] = 'PENDING_VALIDATION'
         result['claims'].append(_unknown(c, reason, sources.get(source_id, batch['text']) if isinstance(source_id, str) else batch['text']) if reason else c)
     for item in data['ambiguous']:
-        result['ambiguous'].append({'src': batch['src'], 'raw_text': batch['text'], 'detail': item})
+        source_id = item.get('src') if isinstance(item, dict) else None
+        if not isinstance(source_id, str) or source_id not in sources:
+            source_id = batch['src']
+        result['ambiguous'].append({
+            'src': source_id, 'raw_text': sources.get(source_id, batch['text']), 'detail': item,
+        })
     if data['irrelevant']:
         used = {claim['src'] for claim in result['claims'] if isinstance(claim.get('src'), str)}
         if all(isinstance(src, str) and src in sources and src not in used for src in data['irrelevant']):
