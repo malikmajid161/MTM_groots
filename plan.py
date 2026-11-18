@@ -1,7 +1,7 @@
 """Normalize compact claim keys for the first planner slice."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from itertools import combinations
 from operator import eq, ge, gt, le, lt, ne
@@ -14,9 +14,9 @@ COUNT_KEYS = frozenset((
     "student_count", "team_size", "staff_count", "judge_count", "capacity",
     "quantity", "duration_minutes", "judge_team_cap", "minutes_per_team"
 ))
-PRICE_KEYS = frozenset(("unit_price", "budget_cap", "committed_cost"))
+PRICE_KEYS = frozenset(("unit_price", "budget_cap", "committed_cost", "delivery_cost"))
 KEYS = COUNT_KEYS | PRICE_KEYS | {
-    "start_time", "end_time", "availability_window", "required_feature", "engagement_rule"
+    "start_time", "end_time", "availability_window", "required_feature", "engagement_rule", "meal_fraction", "preference_rank", "meal_coverage"
 }
 KINDS = frozenset(("fact", "directive", "proposal", "warning", "reported_action"))
 
@@ -38,7 +38,7 @@ class Claim:
 
     @property
     def identity(self):
-        return self.area, self.entity_type, self.entity_id, self.key, self.scope
+        return self.entity_type, self.entity_id, self.key, self.scope
 
 
 def feature_set(value):
@@ -50,12 +50,27 @@ def feature_set(value):
     return {name.strip().casefold() for name in names}
 
 
+def parse_stamp(value):
+    if not isinstance(value, str):
+        raise ValueError("Expected a time string")
+    if len(value) in (5, 8) and value[2] == ':':
+        return datetime.combine(datetime(2000, 1, 1), time.fromisoformat(value))
+    return datetime.fromisoformat(value)
+
+
 def parse_window(value):
     if not isinstance(value, dict):
         return None
-    start = datetime.fromisoformat(value.get("start"))
-    end = datetime.fromisoformat(value.get("end"))
-    if start.utcoffset() is None or end.utcoffset() is None or start >= end:
+    raw_start, raw_end = value.get("start"), value.get("end")
+    if not raw_start and not raw_end:
+        return None
+    start = parse_stamp(raw_start) if raw_start else None
+    end = parse_stamp(raw_end) if raw_end else None
+    if start is None:
+        start = datetime.min.replace(tzinfo=end.tzinfo)
+    if end is None:
+        end = datetime.max.replace(tzinfo=start.tzinfo)
+    if (start.utcoffset() is None) != (end.utcoffset() is None) or start >= end:
         return None
     return start, end
 
@@ -124,8 +139,22 @@ def normalize_claim(record):
         reason = record.get("issue") or "extraction marked the claim unknown"
     elif record.get("effective_period"):
         reason = "effective periods require explicit plan-time evaluation"
-    elif record.get("op") not in (None, "=", "=="):
+    elif record.get("op") not in (None, "=", "==") and not (
+        key in {"budget_cap", "judge_team_cap", "end_time"} and record.get("op") == "<="
+        or key in {"meal_fraction", "start_time"} and record.get("op") == ">="
+    ):
         reason = "operator requires a constraint evaluator"
+    elif key == "meal_coverage" and value != "all_attendees":
+        reason = "unsupported meal coverage rule"
+    elif key == "meal_fraction":
+        try:
+            if not 0 <= Decimal(str(value)) <= 1:
+                raise ValueError
+        except (ValueError, InvalidOperation):
+            reason = "expected a fraction between zero and one"
+    elif key == "preference_rank":
+        if type(value) is not int or value < 0:
+            reason = "expected a nonnegative preference rank"
     elif key in COUNT_KEYS:
         if type(value) is not int or value < 0:
             reason = "expected a nonnegative integer"
@@ -148,20 +177,18 @@ def normalize_claim(record):
         reason = "engagement must be required or optional"
     elif key in {"start_time", "end_time"}:
         try:
-            stamp = datetime.fromisoformat(value)
-            if stamp.utcoffset() is None:
-                raise ValueError
+            stamp = parse_stamp(value)
         except (TypeError, ValueError):
-            reason = "expected an ISO datetime with an explicit offset"
+            reason = "expected a local clock time or ISO datetime"
     elif key == "required_feature":
         if entity_type not in {"event", "venue_option"} or (not feature_set(value) and value != []):
             reason = "expected venue feature names on an event or venue"
     elif key == "availability_window":
         try:
-            if entity_type not in {"judge", "venue_option"} or not parse_window(value):
+            if entity_type not in {"judge", "venue_option", "activity"} or not parse_window(value):
                 raise ValueError
         except (TypeError, ValueError):
-            reason = "expected offset-aware judge or venue availability bounds"
+            reason = "expected comparable judge, venue or activity availability bounds"
     identity_scope = scope if scope not in ("fixed", "per_item", "per_person") else ""
     return Claim(source, area, entity_type, entity_id, key, value, identity_scope, currency, kind,
                  reason, unit, price_basis)
@@ -291,6 +318,8 @@ def build_plan(claims, constraints=()):
         ]))
     _, event = events[0]
     event_duration = read(event, "duration_minutes")
+    read(event, "meal_coverage")
+    event_begin_raw, event_finish_raw = read(event, "start_time"), read(event, "end_time")
     activity_id, activity = activities[0]
     students = read(event, "student_count")
     team_size = read(event, "team_size")
@@ -303,8 +332,23 @@ def build_plan(claims, constraints=()):
     start = read(activity, "start_time")
     end = read(activity, "end_time")
     duration = read(activity, "duration_minutes")
+    judging_window = parse_window(read(activity, "availability_window"))
+    if judging_window:
+        if start is None:
+            start = judging_window[0].isoformat()
+        if end is None:
+            end = judging_window[1].isoformat()
     team_minutes = read(activity, "minutes_per_team")
     judge_cap = read(activity, "judge_team_cap")
+    # Reconcile unambiguous homogeneous-pool throughput without duplicating facts.
+    for key in ("minutes_per_team", "judge_team_cap"):
+        values = {read(group, key) for _, group in select("judge") if key in group}
+        if len(values) == 1:
+            value = values.pop()
+            if key == "minutes_per_team" and team_minutes is None:
+                team_minutes = value
+            elif key == "judge_team_cap" and judge_cap is None:
+                judge_cap = value
     budget = cost(event, "budget_cap", {"": 1})
     if None in (students, team_size, staff, available, team_minutes, judge_cap, budget):
         return Plan("UNVERIFIED", areas, tuple(issues + [
@@ -323,33 +367,82 @@ def build_plan(claims, constraints=()):
         end = start + timedelta(minutes=duration)
     else:
         if start is None and end is not None and duration is not None:
-            start = (datetime.fromisoformat(end) - timedelta(minutes=duration)).isoformat()
+            start = (parse_stamp(end) - timedelta(minutes=duration)).isoformat()
         if end is None and start is not None and duration is not None:
-            end = (datetime.fromisoformat(start) + timedelta(minutes=duration)).isoformat()
+            end = (parse_stamp(start) + timedelta(minutes=duration)).isoformat()
         if start is None or end is None:
             return Plan("UNVERIFIED", areas, tuple(issues + ["Incomplete judging window."]))
-        start, end = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        start, end = parse_stamp(start), parse_stamp(end)
     origin = start
     def stamp(value):
-        return f"T+{int((value - origin).total_seconds() // 60)}m" if relative else value.isoformat()
-    areas["schedule"] = {"activity": activity_id, "start": stamp(start), "end": stamp(end), "time_basis": "relative" if relative else "absolute"}
+        if relative:
+            return f"T+{int((value - origin).total_seconds() // 60)}m"
+        return value.strftime("%H:%M") if value.year == 2000 and value.utcoffset() is None else value.isoformat()
+    areas["schedule"] = {"activity": activity_id, "start": stamp(start), "end": stamp(end), "time_basis": "relative" if relative else ("local" if start.utcoffset() is None else "absolute")}
     intervals = {activity_id: (start, end)}
-    for name, group in select("activity"):
+    declared_begin = parse_stamp(event_begin_raw) if event_begin_raw else None
+    declared_finish = parse_stamp(event_finish_raw) if event_finish_raw else None
+    if declared_begin is None and event_duration is not None and not relative:
+        declared_begin = end - timedelta(minutes=event_duration)
+    if declared_finish is None and declared_begin is not None and event_duration is not None:
+        declared_finish = declared_begin + timedelta(minutes=event_duration)
+    chosen_durations = {}
+    activity_edges = {name: set() for name, _ in select("activity")}
+    for item in hard_constraints:
+        payload = item.get("payload", {})
+        refs = payload.get("activities")
+        if item.get("family") == "time_order" and isinstance(refs, list) and len(refs) == 2:
+            left, right = refs
+            if payload.get("relation") == "after":
+                left, right = right, left
+            elif payload.get("relation") != "before":
+                continue
+            if left in activity_edges and right in activity_edges:
+                activity_edges[right].add(left)
+    ordered_activities = []
+    pending_activities = dict(select("activity"))
+    while pending_activities:
+        ready = next((name for name in pending_activities
+                      if not (activity_edges[name] & pending_activities.keys())), None)
+        if ready is None:
+            return Plan("INFEASIBLE", areas, ("Activity ordering constraints contain a cycle.",))
+        ordered_activities.append((ready, pending_activities.pop(ready)))
+    for name, group in ordered_activities:
         if name == activity_id:
             continue
         begin, finish = read(group, "start_time"), read(group, "end_time")
         length = read(group, "duration_minutes")
-        if relative and begin is None and finish is None and length is not None:
+        included = read(group, "engagement_rule")
+        placement = parse_window(read(group, "availability_window"))
+        if length is None and included == "required":
+            length = 1  # Explicit planner choice on a one-minute grid, not an extracted fact.
+            chosen_durations[name] = length
+        if placement and length is not None:
+            begin = max([placement[0], *(intervals[dependency][1] for dependency in activity_edges[name] if dependency in intervals)])
+            finish = begin + timedelta(minutes=length)
+            if finish > placement[1]:
+                return Plan("INFEASIBLE", areas, (f"{name}: duration exceeds placement window",))
+        elif not relative and begin is None and finish is None and length is not None:
+            begin = declared_begin if declared_begin is not None else start - timedelta(minutes=length)
+            begin = max([begin, *(intervals[dependency][1] for dependency in activity_edges[name] if dependency in intervals)])
+            finish = begin + timedelta(minutes=length)
+            for occupied_begin, occupied_end in sorted(intervals.values()):
+                if begin < occupied_end and occupied_begin < finish:
+                    begin = occupied_end
+                    finish = begin + timedelta(minutes=length)
+        elif relative and begin is None and finish is None and length is not None:
             begin = max(finish for _, finish in intervals.values())
             finish = begin + timedelta(minutes=length)
         elif begin is not None and finish is not None:
-            begin, finish = datetime.fromisoformat(begin), datetime.fromisoformat(finish)
+            begin, finish = parse_stamp(begin), parse_stamp(finish)
         else:
             issues.append(f"{name}: fixed activity requires start and end times")
             continue
         if finish <= begin or (length is not None and finish - begin != timedelta(minutes=length)):
             return Plan("INFEASIBLE", areas, tuple(issues + [f"{name}: activity times contradict duration"]))
         intervals[name] = (begin, finish)
+    if chosen_durations:
+        areas["schedule"]["chosen_duration_minutes"] = chosen_durations
     if relative:
         # Place duration-only activities in an order satisfying supported edges.
         names = list(intervals)
@@ -387,8 +480,11 @@ def build_plan(claims, constraints=()):
             name: {"start": stamp(begin), "end": stamp(finish)}
             for name, (begin, finish) in intervals.items()
         }
-    event_start = min(begin for begin, _ in intervals.values())
-    event_end = max(finish for _, finish in intervals.values())
+    event_start = declared_begin if declared_begin is not None else min(begin for begin, _ in intervals.values())
+    event_end = declared_finish if declared_finish is not None else max(finish for _, finish in intervals.values())
+    if any(begin < event_start or finish > event_end for begin, finish in intervals.values()):
+        return Plan("INFEASIBLE", areas, ("An activity falls outside the event window.",))
+    areas["schedule"].update(event_start=stamp(event_start), event_end=stamp(event_end))
     teams = (students + team_size - 1) // team_size
     if teams > 10_000:
         return Plan("UNVERIFIED", areas, tuple(issues + ["Explicit team assignment limit exceeded."]))
@@ -419,6 +515,9 @@ def build_plan(claims, constraints=()):
             "fixed": 1, "per_person": 1, "per_item": 1
         })
     currency, limit = budget
+    delivery = cost(event, "delivery_cost", {"": 1}) or (currency, Decimal(0))
+    if delivery[0] != currency:
+        issues.append("Delivery currency does not match the event budget")
     committed = [cost(group, "committed_cost", {"": 1}) for _, group in select("expense")]
     if any(item is None for item in committed):
         issues.append("An expense is missing its committed cost")
@@ -460,10 +559,14 @@ def build_plan(claims, constraints=()):
     for _, option in (*venues, *meals):
         read(option, "unit_price")
     meal_rules = {name: read(group, "engagement_rule") for name, group in meals}
-    required_meals = {name for name, rule in meal_rules.items() if rule == "required"}
+    meal_fractions = {name: read(group, "meal_fraction") for name, group in meals}
+    meal_preferences = {name: read(group, "preference_rank", 0) for name, group in meals}
+    components = [(name, group) for name, group in meals if meal_fractions[name] is not None]
+    required_meals = {name for name, rule in meal_rules.items()
+                      if rule == "required" and meal_fractions[name] is None}
     if len(required_meals) > 1:
         issues.append("Multiple required meal items need an explicit multi-item plan")
-    elif len(meals) > 1 and not required_meals and any(rule is None for rule in meal_rules.values()):
+    elif len(meals) > 1 and not required_meals and not components and any(rule is None and "preference_rank" not in group for name, group in meals for rule in [meal_rules[name]]):
         issues.append("Meal substitution terms are missing")
     for name, value in venue_capacities.items():
         if value is None:
@@ -535,6 +638,8 @@ def build_plan(claims, constraints=()):
                 venue_price = cost(venue, "unit_price", {"fixed": 1, "per_person": people})
                 capacity = venue_capacities[venue_id]
                 for meal_id, meal in meals:
+                    if meal_fractions[meal_id] is not None:
+                        continue
                     quantity = meal_quantities[meal_id]
                     if quantity is None:
                         # A per-unit quote is an option to order the required count.
@@ -567,9 +672,24 @@ def build_plan(claims, constraints=()):
                             continue
                     if required_meals and required_meals != {meal_id}:
                         continue
-                    meal_price = cost(meal, "unit_price", {
-                        "fixed": 1, "per_item": quantity, "per_person": quantity
-                    })
+                    parts = {}
+                    remaining = quantity
+                    part_prices = []
+                    for component_id, component in components:
+                        count = int((quantity * Decimal(str(meal_fractions[component_id]))).to_integral_value(rounding=ROUND_CEILING))
+                        parts[component_id] = count
+                        remaining -= count
+                        part_prices.append(cost(component, "unit_price", {"fixed": 1, "per_item": count, "per_person": count}))
+                    if remaining < 0:
+                        continue
+                    parts[meal_id] = remaining
+                    part_prices.append(cost(meal, "unit_price", {
+                        "fixed": 1, "per_item": remaining, "per_person": remaining
+                    }))
+                    if any(item is None or item[0] != currency for item in part_prices):
+                        candidate_gaps.append(f"{meal_id}: missing component price or mismatched currency")
+                        continue
+                    meal_price = currency, sum(item[1] for item in part_prices) + delivery[1]
                     prices = [venue_price, meal_price, *committed,
                               *(judge_prices[judge] for judge in engaged)]
                     if any(item is None or item[0] != currency for item in prices):
@@ -589,6 +709,7 @@ def build_plan(claims, constraints=()):
                         "students": (students, "people"), "teams": (teams, "teams"),
                         "judges": (len(engaged), "judges"), "meals": (quantity, "meals"),
                     }
+                    counts.update({name: (amount, "meals") for name, amount in parts.items()})
                     bookings = dict(intervals)
                     if venue_id not in intervals:
                         bookings[venue_id] = (event_start, event_end)
@@ -604,10 +725,12 @@ def build_plan(claims, constraints=()):
                             failed = True
                     if failed:
                         continue
-                    rank = (bool(unknown), total, len(engaged), venue_id, meal_id, engaged)
+                    rank = (bool(unknown), meal_preferences[meal_id], total, len(engaged), venue_id, meal_id, engaged)
                     if total <= limit and (best is None or rank < best):
                         best = rank
                         best_quantity = quantity
+                        best_parts = parts
+                        best_costs = costs
                         best_assignments = assigned
                         selected_unknown = tuple(unknown)
 
@@ -624,7 +747,7 @@ def build_plan(claims, constraints=()):
         issues.append("No candidate satisfies the supported headcount, judging and budget checks.")
         return Plan(status, areas, tuple(dict.fromkeys(issues)))
 
-    _, total, _, venue_id, meal_id, engaged = best
+    _, _, total, _, venue_id, meal_id, engaged = best
     issues.extend(selected_unknown)
     assignments = []
     for index, (slot, judge) in enumerate(best_assignments):
@@ -637,8 +760,12 @@ def build_plan(claims, constraints=()):
     people = students + staff + len(engaged)
     areas["venue"] = {"option": venue_id, "people": people, "capacity": venue_capacities[venue_id]}
     areas["food"] = {"item": meal_id, "quantity": best_quantity, "required": people}
+    if components:
+        areas["food"]["items"] = best_parts
+    areas["food"]["delivery"] = str(delivery[1])
     areas["judging"].update(engaged=engaged, assignments=assignments)
     areas["budget"]["total"] = str(total)
+    areas["budget"]["breakdown"] = {key: str(value) for key, value in best_costs.items()}
     if extras:
         areas["budget"]["extras"] = {item: str(amount) for item, amount in extras.items()}
     return Plan("UNVERIFIED" if issues else "VALID", areas, tuple(dict.fromkeys(issues)))
