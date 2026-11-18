@@ -122,6 +122,12 @@ Remaining issues / next consumer:
 | I1 | TODO | TODO | REVIEW | CLI and cumulative reporting pushed as `72c8045`; mocked CLI tests pass. |
 | I2 | TODO | TODO | REVIEW | State preservation and prediction tracking pushed as `c97bd1e`; live adapter integration pending. |
 | I3 | REVIEW | REVIEW | REVIEW | Integrated branch passed the four-run production CLI rehearsal against a local mock HTTP provider at `bb313c2`. Live provider and unsupported constraint checks remain open. |
-| I4 | TODO | TODO | TODO | — |
+| I4 | REVIEW | REVIEW | REVIEW | `a9e8dec` passes 42 tests, including typed updates and a failed HTTP attempt through the production CLI with mock provider responses. |
 
 No work or tests are marked complete by creating this task breakdown. Clock times are the brief's build window; if starting later, preserve the 13:25 freeze and shorten scope explicitly rather than shifting the deadline.
+
+### Remaining judging checks
+
+- Ismail: run a real provider smoke test with English and Roman Urdu, verify exact model IDs and reported usage, and hand off the supported model configuration.
+- Abdullah: demonstrate a complete plan from aggregate judge data and relative event timing. The current fixed-grid planner expects identified judges and an explicitly timed judging activity. Verify mixed hard constraints and report any unsupported cases.
+- Majid: repeat the judging rehearsal with both changes integrated and a real provider configured. Verify artifacts, call counts, wall times, clean Git, and the candidate submission hash.
