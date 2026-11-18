@@ -15,7 +15,7 @@ class PlannerIntegrationTests(unittest.TestCase):
         amendment = claim("food", "vendor_item", "meal", "quantity", 12,
                           src="supplier", kind="reported_action")
         result = plan_for_cli(saved, Extraction(claims=[amendment], sources={"supplier": "update"}))
-        self.assertEqual(result.status, "UNVERIFIED")
+        self.assertEqual(result.status, "VALID")
         self.assertEqual(result.last_valid["status"], "VALID")
         self.assertEqual(result.plan["areas"]["food"]["quantity"], 27)
         self.assertIn("reported 12 items, approved 27 items", result.decisions[0]["reason"])

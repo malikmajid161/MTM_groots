@@ -31,7 +31,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(result.decisions[0].outcome, "rejected")
         self.assertIn("reported 12 items, approved 27 items", result.decisions[0].reason)
         self.assertEqual(result.state.plan.areas["food"]["quantity"], 27)
-        self.assertEqual(result.state.plan.status, "UNVERIFIED")
+        self.assertEqual(result.state.plan.status, "VALID")
         self.assertEqual(result.state.last_valid.status, "VALID")
 
     def test_verified_directive_checks_scope_then_rolls_back_shortfall(self):

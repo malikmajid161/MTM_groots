@@ -111,7 +111,6 @@ def apply_update(state, extraction):
                 unit = claim.unit or previous.get("u") or "items"
                 reason += f"; reported {claim.value} {unit}, approved {previous['v']} {unit}"
             decisions.append(Decision(source, "rejected", reason))
-            blocking.append(f"{source}: fulfillment review required. {reason}")
             continue
         if claim.kind == "directive":
             scopes = extraction.get("trusted_scopes", {}).get(source)

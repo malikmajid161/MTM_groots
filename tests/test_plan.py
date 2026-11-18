@@ -143,3 +143,43 @@ class PlannerTests(unittest.TestCase):
         plan = apply_update(None, {"claims": base}).state.plan
         self.assertEqual(plan.status, "VALID", plan.issues)
         self.assertEqual(plan.areas["food"]["item"], "meal")
+
+    def test_unnamed_pool_relative_schedule_and_parallel_lanes(self):
+        records = [row for row in fixture() if row['et'] != 'judge'
+                   and row['k'] not in {'start_time', 'end_time', 'duration_minutes'}]
+        records += [
+            claim('general', 'event', 'event', 'duration_minutes', 28),
+            claim('schedule', 'activity', 'break', 'duration_minutes', 6),
+            claim('judging', 'judge', 'pool', 'quantity', 2),
+            claim('judging', 'judge', 'pool', 'unit_price', 17,
+                  price_basis='fixed', currency='PKR'),
+            claim('judging', 'judge', 'pool', 'engagement_rule', 'optional'),
+        ]
+        plan = apply_update(None, {'claims': records}).state.plan
+        self.assertEqual(plan.status, 'VALID', plan.issues)
+        self.assertEqual(plan.areas['budget']['total'], '375')
+        rows = plan.areas['judging']['assignments']
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({(row['judge'], row['start']) for row in rows}), 3)
+        self.assertEqual(plan.areas['schedule']['time_basis'], 'relative')
+        self.assertEqual(plan.areas['schedule']['activities']['break']['end'], 'T+28m')
+        self.assertTrue(all('2000' not in row['start'] for row in rows))
+
+    def test_per_unit_quote_derives_food_without_changing_existing_order(self):
+        records = [row for row in fixture() if not (row['et'] == 'vendor_item' and row['k'] == 'quantity')]
+        plan = apply_update(None, {'claims': records}).state.plan
+        self.assertEqual(plan.status, 'VALID', plan.issues)
+        self.assertEqual(plan.areas['food']['quantity'], 25)
+        self.assertEqual(plan.areas['budget']['total'], '359')
+
+    def test_unknown_unused_venue_does_not_poison_verified_candidate(self):
+        records = fixture() + [
+            claim('general', 'event', 'event', 'required_feature', ['ramp']),
+            claim('venue', 'venue_option', 'hall', 'required_feature', ['ramp']),
+            claim('venue', 'venue_option', 'unknown', 'capacity', 30),
+            claim('venue', 'venue_option', 'unknown', 'unit_price', 2,
+                  price_basis='fixed', currency='PKR'),
+        ]
+        plan = apply_update(None, {'claims': records}).state.plan
+        self.assertEqual(plan.status, 'VALID', plan.issues)
+        self.assertEqual(plan.areas['venue']['option'], 'hall')
