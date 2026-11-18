@@ -38,6 +38,43 @@ def fixture():
 
 
 class PlannerTests(unittest.TestCase):
+    def test_typed_constraints_filter_joint_choices_and_include_extras_once(self):
+        claims = fixture() + [
+            claim("food", "vendor_item", "meal", "engagement_rule", "optional"),
+            claim("food", "vendor_item", "larger", "engagement_rule", "optional"),
+            claim("food", "vendor_item", "larger", "quantity", 30),
+            claim("food", "vendor_item", "larger", "unit_price", 12,
+                  price_basis="per_item", currency="PKR"),
+            claim("schedule", "activity", "briefing", "start_time", "2026-12-01T09:50:00+05:00"),
+            claim("schedule", "activity", "briefing", "end_time", "2026-12-01T10:00:00+05:00"),
+        ]
+
+        def hard(family, **payload):
+            return {"src": "requirements", "family": family, "modality": "hard", "payload": payload}
+
+        extra = hard("priced_extra", item="signage", required=True, quantity=2, price=7,
+                     price_basis="per_item", currency="PKR", available=True)
+        constraints = [
+            hard("count_bound", target="meals", op=">=", bound=29, unit="meals"),
+            hard("cost_cap", scope="food", cost_refs=["food"], cap=360, currency="PKR"),
+            hard("percentage_uplift", base="students", target="people",
+                 rate="0.17", mode="increase", rounding="ceil", unit="people"),
+            hard("time_order", activities=["briefing", "reviews"], relation="before"),
+            hard("availability", resource="hall", time_basis="absolute",
+                 windows=[{"start": "2026-12-01T09:50:00+05:00",
+                           "end": "2026-12-01T10:33:00+05:00"}]),
+            extra, extra,
+        ]
+        initial = apply_update(None, {"claims": claims, "constraints": constraints}).state
+        self.assertEqual(initial.plan.status, "VALID", initial.plan.issues)
+        self.assertEqual(initial.plan.areas["food"]["item"], "larger")
+        self.assertEqual(initial.plan.areas["budget"]["total"], "508")
+        failed = apply_update(initial, {"constraints": [
+            hard("cost_cap", scope="food", cost_refs=["food"], cap=359, currency="PKR"),
+        ]}).state
+        self.assertEqual(failed.plan.status, "INFEASIBLE", failed.plan.issues)
+        self.assertEqual(failed.last_valid, initial.plan)
+
     def test_five_areas_and_independent_totals(self):
         plan = apply_update(None, {"claims": fixture()}).state.plan
         self.assertEqual(plan.status, "VALID", plan.issues)

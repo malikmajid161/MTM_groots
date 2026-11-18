@@ -2,8 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from itertools import combinations
+from operator import eq, ge, gt, le, lt, ne
 
 AREAS = frozenset(("venue", "schedule", "food", "judging", "budget", "general"))
 ENTITY_TYPES = frozenset((
@@ -161,13 +162,79 @@ class Plan:
     issues: tuple = ()
 
 
-def build_plan(claims):
+COMPARISONS = {"=": eq, "==": eq, "!=": ne, ">=": ge, ">": gt, "<=": le, "<": lt}
+ROUNDING = {"ceil": ROUND_CEILING, "floor": ROUND_FLOOR, "nearest": ROUND_HALF_UP}
+
+
+def nonnegative_amount(value):
+    amount = Decimal(str(value))
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Expected a finite nonnegative value")
+    return amount
+
+
+def constraint_check(constraint, counts, costs, currency, intervals):
+    """Evaluate only references and units the candidate can prove."""
+    family = constraint.get("family")
+    try:
+        payload = constraint["payload"]
+        if family == "count_bound":
+            count, unit = counts[payload["target"]]
+            bound = payload["bound"]
+            if unit == payload["unit"] and type(bound) is int and bound >= 0:
+                return COMPARISONS[payload["op"]](count, bound)
+        elif family == "cost_cap":
+            refs = payload["cost_refs"]
+            if (payload["currency"] == currency and isinstance(refs, list) and refs
+                    and len(set(refs)) == len(refs)):
+                return sum(costs[ref] for ref in refs) <= nonnegative_amount(payload["cap"])
+        elif family == "percentage_uplift":
+            base, base_unit = counts[payload["base"]]
+            target, unit = counts[payload["target"]]
+            factor = nonnegative_amount(payload["rate"])
+            if payload["mode"] == "increase":
+                factor += 1
+            elif payload["mode"] != "share":
+                return None
+            if base_unit == unit == payload["unit"]:
+                minimum = (base * factor).to_integral_value(rounding=ROUNDING[payload["rounding"]])
+                return target >= minimum
+        elif family == "time_order":
+            left, right = payload["activities"]
+            first, second = intervals[left], intervals[right]
+            relation = payload["relation"]
+            if set(payload) != {"activities", "relation"}:
+                return None
+            if relation == "before":
+                return first[1] <= second[0]
+            if relation == "after":
+                return second[1] <= first[0]
+            if relation == "non_overlap":
+                return first[1] <= second[0] or second[1] <= first[0]
+        elif family == "availability":
+            if payload["time_basis"] != "absolute":
+                return None
+            bookings = intervals.get(payload["resource"])
+            if bookings is None:
+                return None
+            windows = [parse_window(window) for window in payload["windows"]]
+            if windows and all(windows):
+                # The search handles canonical windows. An unplaced typed
+                # window cannot prove infeasibility for alternate assignments.
+                return True if any(a <= bookings[0] and bookings[1] <= b for a, b in windows) else None
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        return None
+    return None
+
+
+def build_plan(claims, constraints=()):
     """Build a candidate for one event and one explicitly timed judging activity."""
     from datetime import timedelta
 
     claims = tuple(claims)
     areas = {area: {} for area in ("venue", "schedule", "food", "judging", "budget")}
     issues = [f"{claim.source}: {claim.reason}" for claim in claims if claim.reason]
+    hard_constraints = [item for item in constraints if item.get("modality") != "soft"]
     groups = {}
     used = set()
 
@@ -227,6 +294,26 @@ def build_plan(claims):
 
     start, end = datetime.fromisoformat(start), datetime.fromisoformat(end)
     areas["schedule"] = {"activity": activity_id, "start": start.isoformat(), "end": end.isoformat()}
+    intervals = {activity_id: (start, end)}
+    for name, group in select("activity"):
+        if name == activity_id:
+            continue
+        begin, finish = read(group, "start_time"), read(group, "end_time")
+        length = read(group, "duration_minutes")
+        if begin is None or finish is None:
+            issues.append(f"{name}: fixed activity requires start and end times")
+            continue
+        begin, finish = datetime.fromisoformat(begin), datetime.fromisoformat(finish)
+        if finish <= begin or (length is not None and finish - begin != timedelta(minutes=length)):
+            return Plan("INFEASIBLE", areas, tuple(issues + [f"{name}: activity times contradict duration"]))
+        intervals[name] = (begin, finish)
+    if len(intervals) > 1:
+        areas["schedule"]["activities"] = {
+            name: {"start": begin.isoformat(), "end": finish.isoformat()}
+            for name, (begin, finish) in intervals.items()
+        }
+    event_start = min(begin for begin, _ in intervals.values())
+    event_end = max(finish for _, finish in intervals.values())
     teams = (students + team_size - 1) // team_size
     if teams > 10_000:
         return Plan("UNVERIFIED", areas, tuple(issues + ["Explicit team assignment limit exceeded."]))
@@ -256,6 +343,31 @@ def build_plan(claims):
     committed = [cost(group, "committed_cost", {"": 1}) for _, group in select("expense")]
     if any(item is None for item in committed):
         issues.append("An expense is missing its committed cost")
+    extras = {}
+    expense_ids = {name for name, _ in select("expense")}
+    checks = []
+    for constraint in hard_constraints:
+        if constraint.get("family") != "priced_extra":
+            checks.append(constraint)
+            continue
+        try:
+            payload = constraint["payload"]
+            item, required_extra, quantity = (payload[key] for key in ("item", "required", "quantity"))
+            basis = payload["price_basis"]
+            if (not isinstance(item, str) or not item or type(required_extra) is not bool
+                    or type(quantity) is not int or quantity < 0 or payload["currency"] != currency
+                    or basis not in {"fixed", "per_item", "per_person"}):
+                raise ValueError
+            if not required_extra:
+                continue
+            amount = nonnegative_amount(payload["price"]) * (1 if basis == "fixed" else quantity)
+            if item in expense_ids or payload.get("available") is not True:
+                raise ValueError
+            if item in extras and extras[item] != amount:
+                raise ValueError
+            extras[item] = amount
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            issues.append(f"{constraint.get('src')}: priced extra cost or availability is unverified")
 
     venues, meals = select("venue_option"), select("vendor_item")
     if not venues or not meals:
@@ -303,21 +415,28 @@ def build_plan(claims):
     best = None
     if not assignments_possible or len(optional) < needed_optional:
         groups_to_try = ()
-    elif not any(judge_windows.values()):
+    elif not any(judge_windows.values()) and not checks:
         groups_to_try = (iter((optional[:needed_optional],)),)
     else:
         groups_to_try = (
             combinations(optional, size) for size in range(needed_optional, len(optional) + 1)
         )
     attempts = 0
+    selected_unknown = ()
+    failures = set()
+    grid_incomplete = False
     for groups_at_size in groups_to_try:
         for extra in groups_at_size:
             attempts += 1
             if attempts > 10_000:
                 return Plan("UNVERIFIED", areas, tuple(issues + ["Judge group search limit reached."]))
             engaged = sorted(required.union(extra))
-            assigned = assign_slots(engaged, judging_slots, judge_cap, judge_windows, teams)
+            try:
+                assigned = assign_slots(engaged, judging_slots, judge_cap, judge_windows, teams)
+            except RecursionError:
+                return Plan("UNVERIFIED", areas, tuple(issues + ["Judge matching depth limit reached."]))
             if assigned is None:
+                grid_incomplete |= any(judge_windows[judge] for judge in engaged)
                 continue
             people = students + staff + len(engaged)
             for venue_id, venue in venues:
@@ -328,7 +447,7 @@ def build_plan(claims):
                 if not required_features <= feature_set(features):
                     continue
                 window = venue_windows[venue_id]
-                if window and not (window[0] <= start and end <= window[1]):
+                if window and not (window[0] <= event_start and event_end <= window[1]):
                     continue
                 venue_price = cost(venue, "unit_price", {"fixed": 1, "per_person": people})
                 capacity = venue_capacities[venue_id]
@@ -346,12 +465,39 @@ def build_plan(claims):
                         continue
                     if capacity is None or min(capacity, quantity) < people:
                         continue
-                    total = sum((amount for _, amount in prices), Decimal(0))
-                    rank = (len(engaged), total, venue_id, meal_id, engaged)
+                    costs = {
+                        "venue": venue_price[1], "food": meal_price[1],
+                        "judging": sum(judge_prices[judge][1] for judge in engaged),
+                        "committed": sum(amount for _, amount in committed),
+                        "extras": sum(extras.values()),
+                    }
+                    total = sum(costs.values())
+                    counts = {
+                        "people": (people, "people"), "seats": (capacity, "seats"),
+                        "students": (students, "people"), "teams": (teams, "teams"),
+                        "judges": (len(engaged), "judges"), "meals": (quantity, "meals"),
+                    }
+                    bookings = dict(intervals)
+                    if venue_id not in intervals:
+                        bookings[venue_id] = (event_start, event_end)
+                    unknown = []
+                    failed = False
+                    for constraint in checks:
+                        status = constraint_check(constraint, counts, costs, currency, bookings)
+                        label = f"{constraint.get('src')}: {constraint.get('family', 'constraint')}"
+                        if status is None:
+                            unknown.append(f"{label} could not be verified")
+                        elif not status:
+                            failures.add(f"{label} failed")
+                            failed = True
+                    if failed:
+                        continue
+                    rank = (bool(unknown), len(engaged), total, venue_id, meal_id, engaged)
                     if total <= limit and (best is None or rank < best):
                         best = rank
                         best_assignments = assigned
-        if best is not None:
+                        selected_unknown = tuple(unknown)
+        if best is not None and not selected_unknown:
             break
 
     issues.extend(f"{claim.source}: unsupported placement of {claim.key}"
@@ -359,10 +505,15 @@ def build_plan(claims):
     areas["judging"] = {"teams": teams, "available": available}
     areas["budget"] = {"currency": currency, "cap": str(limit)}
     if best is None:
+        if grid_incomplete:
+            issues.append("No assignment on the supported fixed grid for one or more judge groups")
+        status = "UNVERIFIED" if issues else "INFEASIBLE"
+        issues.extend(sorted(failures))
         issues.append("No candidate satisfies the supported headcount, judging and budget checks.")
-        return Plan("UNVERIFIED" if len(issues) > 1 else "INFEASIBLE", areas, tuple(dict.fromkeys(issues)))
+        return Plan(status, areas, tuple(dict.fromkeys(issues)))
 
-    _, total, venue_id, meal_id, engaged = best
+    _, _, total, venue_id, meal_id, engaged = best
+    issues.extend(selected_unknown)
     assignments = []
     for index, (slot, judge) in enumerate(best_assignments):
         slot_start, slot_end = judging_slots[slot]
@@ -376,4 +527,6 @@ def build_plan(claims):
     areas["food"] = {"item": meal_id, "quantity": meal_quantities[meal_id], "required": people}
     areas["judging"].update(engaged=engaged, assignments=assignments)
     areas["budget"]["total"] = str(total)
+    if extras:
+        areas["budget"]["extras"] = {item: str(amount) for item, amount in extras.items()}
     return Plan("UNVERIFIED" if issues else "VALID", areas, tuple(dict.fromkeys(issues)))
