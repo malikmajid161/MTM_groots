@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from email.utils import parsedate_to_datetime
@@ -39,10 +40,35 @@ def atomic_write(path, content):
         temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def session_lock(runtime):
+    # Keep the lock file in place so processes always lock the same file.
+    with (runtime / ".session.lock").open("a+b") as lock:
+        lock.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            acquire = lambda: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            acquire = lambda: fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            acquire()
+        except OSError as error:
+            raise OSError("Could not lock this session. Retry after the active run finishes.") from error
+        yield
+
+
 def run(path, runtime, extract, apply_update):
     started = monotonic()
     batch = load_input(path)
     runtime.mkdir(parents=True, exist_ok=True)
+    with session_lock(runtime):
+        return run_session(batch, runtime, extract, apply_update, started)
+
+
+def run_session(batch, runtime, extract, apply_update, started):
     session_path = runtime / "session.json"
     session = (
         json.loads(session_path.read_text(encoding="utf-8"))

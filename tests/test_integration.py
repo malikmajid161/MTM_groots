@@ -97,3 +97,16 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual([entry["status"] for entry in session["runs"]],
                              ["failed", "completed", "completed"])
             self.assertIn("prediction_error", session["runs"][-1])
+
+    def test_concurrent_run_cannot_overwrite_session(self):
+        from main import session_lock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pack.txt"
+            source.write_text("Workshop pack", encoding="utf-8")
+            with session_lock(root):
+                with self.assertRaisesRegex(OSError, "active run"):
+                    run(source, root, None, None)
+            with session_lock(root):
+                self.assertFalse((root / "session.json").exists())
