@@ -168,4 +168,4 @@ Preserve practice evidence before starting the official session. Verify a clean 
 
 ## Live dashboard
 
-Run `python3 serve_ui.py` and open http://127.0.0.1:8000/. Choose **New session** to upload a UTF-8 messages TXT file. Progress shows processing stages and elapsed time; the resulting session renders automatically, including provider failures. Each upload saves its plan, trace and session under `runtime/ui/<session-id>/`. **Upload session** still opens previously saved JSON evidence. To show an existing result initially, use `python3 serve_ui.py --session /path/to/session.json`.
+Run `python3 serve_ui.py` and open http://127.0.0.1:8000/. Choose **New session** to upload a UTF-8 messages TXT file. Progress shows processing stages and elapsed time; the resulting session renders automatically, including provider failures. Each upload saves its plan, trace and session under `runtime/ui/<session-id>/`. **Upload session** still opens previously saved JSON evidence. Refreshing starts with an empty dashboard; use **Upload session** to open saved evidence.

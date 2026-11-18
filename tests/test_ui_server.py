@@ -24,13 +24,17 @@ class UploadTests(unittest.TestCase):
                 self.assertEqual(path.read_text(), 'From: organiser\nHello')
             (destination / 'session.json').write_text(json.dumps(session))
         with TemporaryDirectory() as temp, patch.object(serve_ui, 'ROOT', Path(temp)), patch.object(serve_ui, 'run', fake_run):
-            server = serve_ui.make_server(0)
+            server = serve_ui.make_server(0, initial=session)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base = f'http://127.0.0.1:{server.server_port}'
             try:
                 html = urlopen(base).read().decode()
                 self.assertIn('messages-upload', html)
+                import re
+                from html import unescape
+                embedded = re.search(r'<template id="session-data">(.*?)</template>', html, re.S).group(1)
+                self.assertIsNone(json.loads(unescape(embedded))['result'])
                 req = Request(base+'/api/sessions', data=b'From: organiser\nHello', headers={'Content-Type': 'text/plain'})
                 job_id = json.load(urlopen(req))['id']
                 for _ in range(100):

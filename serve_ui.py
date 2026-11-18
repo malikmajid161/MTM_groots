@@ -56,7 +56,7 @@ def make_server(port=8000, initial=None, extractor=extract_for_cli, planner=plan
 
         def do_GET(self):
             if self.path in ('/', '/report.html'):
-                return self.send(200, render(initial if initial.get('runs') else empty)[1], 'text/html')
+                return self.send(200, render(empty)[1], 'text/html')
             if self.path.startswith('/api/jobs/'):
                 with lock:
                     job = dict(jobs.get(self.path.rsplit('/', 1)[-1], {}))
@@ -110,11 +110,9 @@ def make_server(port=8000, initial=None, extractor=extract_for_cli, planner=plan
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8000)
-    parser.add_argument('--session', type=Path, help='Optional saved session to display initially')
     args = parser.parse_args()
     load_env(ROOT / '.env')
-    initial = json.loads(args.session.read_text()) if args.session else None
-    server = make_server(args.port, initial)
+    server = make_server(args.port)
     print(f'Dashboard: http://127.0.0.1:{server.server_port}/', flush=True)
     server.serve_forever()
 
