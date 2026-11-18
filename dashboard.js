@@ -788,3 +788,55 @@ uploadTarget.addEventListener("drop", event => {
     uploadTarget.classList.remove("drag-over");
     importSession(event.dataTransfer.files[0]);
 });
+
+// Each messages upload starts an isolated planner session on the local server.
+const messagesUpload = document.querySelector("#messages-upload");
+messagesUpload.addEventListener("change", async () => {
+    const file = messagesUpload.files[0];
+    if (!file) return;
+    const progress = document.querySelector("#run-progress");
+    const message = document.querySelector("#run-message");
+    const bar = document.querySelector("#run-bar");
+    const percent = document.querySelector("#run-percent");
+    const show = (value, text) => {
+        bar.value = value;
+        percent.textContent = `${value}%`;
+        message.textContent = text;
+    };
+    progress.hidden = false;
+    messagesUpload.disabled = true;
+    upload.disabled = true;
+    show(0, "Uploading messages…");
+    try {
+        if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Choose a messages .txt file.");
+        if (location.protocol === "file:") throw new Error("Start python3 serve_ui.py and open http://127.0.0.1:8000/ to run new sessions.");
+        const response = await fetch("/api/sessions", {method: "POST", headers: {"Content-Type": "text/plain; charset=utf-8"}, body: file});
+        if (!response.ok) throw new Error((await response.json()).message || "Upload failed");
+        const {id} = await response.json();
+        const started = Date.now();
+        while (true) {
+            const statusResponse = await fetch(`/api/jobs/${id}`);
+            if (!statusResponse.ok) throw new Error("Could not read session progress");
+            const job = await statusResponse.json();
+            show(job.progress, `${job.message} (${Math.floor((Date.now() - started) / 1000)}s)`);
+            if (job.status !== "running") {
+                if (job.session) {
+                    loadSession(job.session);
+                    currentSession = job.session;
+                    for (const {panel} of tabs.values()) panel.replaceChildren();
+                    activate("plan");
+                    uploadStatus.textContent = file.name;
+                }
+                if (job.status === "failed") message.textContent = `Run failed: ${job.message}`;
+                break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 750));
+        }
+    } catch (error) {
+        message.textContent = error.message;
+    } finally {
+        messagesUpload.disabled = false;
+        upload.disabled = false;
+        messagesUpload.value = "";
+    }
+});

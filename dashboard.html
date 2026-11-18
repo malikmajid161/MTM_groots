@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Groots â€” AI Event Planning Intelligence</title>
 <script type="text/javascript">
 (() => {
@@ -282,10 +282,12 @@ body,[data-theme=dark] body{background:radial-gradient(ellipse at 90% 0%,#aaa0bb
 <span id="page-title">Overview</span>
 <div class="row header-actions">
 <span id="upload-status" role="status"></span>
+<label class="upload-control">New session<input id="messages-upload" type="file" accept=".txt,text/plain" aria-label="New session from messages TXT"></label>
 <label class="upload-control" id="upload-target">Upload session<input id="session-upload" type="file" accept=".json,application/json" aria-label="Upload Groots session JSON"></label>
 <button type="button" id="theme-toggle" class="secondary theme-toggle" aria-label="Dark theme" aria-pressed="false">Dark theme</button>
 </div>
 </header>
+<div id="run-progress" class="card" hidden role="status" aria-live="polite"><span id="run-message"></span> <span id="run-percent"></span><progress id="run-bar" max="100" value="0" style="width:100%"></progress></div>
 <main id="pages"></main>
 </div>
 <noscript><p class="card">Enable JavaScript to use the offline dashboard. The same run evidence is available in submission.txt.</p></noscript>
