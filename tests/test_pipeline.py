@@ -20,7 +20,12 @@ class PipelineTests(unittest.TestCase):
             [claim("budget", "expense", "existing", "committed_cost", 47, currency="PKR")],
             [claim("food", "vendor_item", "meal", "quantity", 12, kind="reported_action",
                    actor="caterer")],
-            [claim("venue", "venue_option", "hall", "capacity", 25)],
+            [
+                claim("venue", "venue_option", "hall", "capacity", 25),
+                claim("venue", "venue_option", "hall", "other", None,
+                      modality="hard", family="count_bound", raw_text="Keep at least 25 seats.",
+                      payload={"target": "seats", "op": ">=", "bound": 25, "unit": "seats"}),
+            ],
         ]
         requests = []
 
@@ -69,7 +74,7 @@ class PipelineTests(unittest.TestCase):
                 root = Path(tmp)
                 inputs = (
                     "Initial workshop pack", "Finance updates the existing expense.",
-                    "Supplier claims an order reduction.", "Venue confirms an amended seating limit.",
+                    "Supplier claims an order reduction.", "Venue confirms an amended seating limit. Keep at least 25 seats.",
                 )
                 for i, text in enumerate(inputs):
                     path = root / f"input-{i}.txt"
@@ -89,6 +94,11 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(plan["food"]["quantity"], 27)
                 self.assertEqual(plan["budget"]["total"], "381")
                 self.assertEqual(plan["venue"]["capacity"], 25)
+                constraint = session["result"]["ledger"]["constraints"][0]
+                self.assertEqual(constraint["family"], "count_bound")
+                self.assertEqual(constraint["payload"]["bound"], 25)
+                self.assertFalse(any("count_bound could not be verified" in issue
+                                     for issue in session["result"]["plan"]["issues"]))
                 self.assertIn("Total tokens: 80", result.stdout)
                 self.assertIn("Model call 4 | mock-http-version | reading", result.stdout)
                 self.assertIn('"configured_model": "mock-http"', result.stdout)
