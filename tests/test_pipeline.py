@@ -77,6 +77,9 @@ class PipelineTests(unittest.TestCase):
                     "Supplier claims an order reduction.", "Venue confirms an amended seating limit. Keep at least 25 seats.",
                 )
                 for i, text in enumerate(inputs):
+                    if i == 1:
+                        prediction = root / "runtime" / "predicted_tags.txt"
+                        prediction.write_text("reading\n", encoding="utf-8")
                     path = root / f"input-{i}.txt"
                     path.write_text(text, encoding="utf-8")
                     result = subprocess.run(
@@ -87,6 +90,13 @@ class PipelineTests(unittest.TestCase):
                     if i == 0:
                         self.assertIn('"status": "VALID"', result.stdout)
                 session = json.loads((root / "runtime" / "session.json").read_text(encoding="utf-8"))
+                self.assertEqual(session["runs"][1]["prediction"], {
+                    "predicted": ["reading"], "actual": ["reading"], "match": True,
+                })
+                self.assertFalse(prediction.exists())
+                html = (root / "runtime" / "report.html").read_text(encoding="utf-8")
+                self.assertIn("Supplier claims an order reduction.", html)
+                self.assertIn("Model call 4", html)
                 self.assertEqual(requests, list(inputs))
                 self.assertEqual([run["attempts"] for run in session["runs"]], [1] * 4)
                 self.assertEqual(session["runs"][2]["decisions"][0]["outcome"], "rejected")
