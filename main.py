@@ -48,7 +48,7 @@ def run(path, runtime, extract, apply_update):
         json.loads(session_path.read_text(encoding="utf-8"))
         if session_path.exists() else {"result": None, "sources": {}, "runs": []}
     )
-    updating = session_path.exists()
+    updating = session["result"] is not None
     budget = RunBudget(started + (55 if updating else 115), 5 if updating else None)
     calls = []
     offset = sum(len(run["calls"]) for run in session["runs"])
@@ -65,7 +65,8 @@ def run(path, runtime, extract, apply_update):
     if updating and prediction_path.exists():
         prediction = sorted(set(prediction_path.read_text(encoding="utf-8").split()))
         if set(prediction) - {"reading", "venue", "schedule", "food", "judging", "budget"}:
-            raise ValueError("Prediction contains an invalid model-call tag")
+            run_log["prediction_error"] = "Prediction contains an invalid model-call tag"
+            prediction = None
 
     def record(call):
         calls.append({"number": offset + len(calls) + 1, **asdict(call)})
