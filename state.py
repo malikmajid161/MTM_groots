@@ -47,7 +47,7 @@ DEPENDENCIES = {
 def parse_message_date(value):
     try:
         date = datetime.fromisoformat(value)
-        return date if date.utcoffset() is not None else None
+        return date
     except (TypeError, ValueError):
         return None
 
@@ -98,7 +98,7 @@ def apply_update(state, extraction):
             continue
         if previous is not None:
             older, newer = parse_message_date(dates.get(source)), parse_message_date(dates.get(previous.get("src")))
-            if older is not None and newer is not None and older < newer:
+            if older is not None and newer is not None and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
                 decisions.append(Decision(source, "unresolved", "Retrospective constraint correction needs review"))
                 blocking.append(f"{source}: retrospective constraint correction needs review")
                 continue
@@ -125,6 +125,14 @@ def apply_update(state, extraction):
             decisions.append(Decision(source, "ignored", "Non-binding proposal"))
             continue
         if claim.kind == "warning":
+            if claim.area == "food" and claim.key == "quantity" and not claim.reason:
+                baseline = state.plan or build_plan((normalize_claim(item) for item in active.values()), constraints)
+                food = baseline.areas.get("food", {})
+                required, ordered = food.get("required"), food.get("quantity")
+                if required is not None and ordered is not None and claim.value < required <= ordered:
+                    decisions.append(Decision(source, "ignored",
+                        f"Warning assessed: {claim.value} meals would be insufficient; plan retains {ordered} meals for {required} attendees"))
+                    continue
             decisions.append(Decision(source, "unresolved", "Warning requires assessment"))
             blocking.append(f"{source}: warning requires assessment")
             continue
@@ -140,6 +148,13 @@ def apply_update(state, extraction):
         if claim.kind == "directive":
             scopes = extraction.get("trusted_scopes", {}).get(source)
             if not scopes:
+                if claim.area == "food" and claim.key == "quantity" and not claim.reason:
+                    baseline = state.plan or build_plan((normalize_claim(item) for item in active.values()), constraints)
+                    required = baseline.areas.get("food", {}).get("required")
+                    if required is not None and claim.value < required:
+                        decisions.append(Decision(source, "rejected",
+                            f"Authority could not be verified; requested {claim.value} meals < required {required} meals"))
+                        continue
                 decisions.append(Decision(source, "unresolved", "Authority could not be verified"))
                 continue
             if claim.area not in scopes:
@@ -163,15 +178,10 @@ def apply_update(state, extraction):
             target == previous.get("claim_id") or
             ("corrects" in record and target == previous["src"])
         )
-        if target is not None and not matches:
-            reason = "Correction target does not match the active claim"
-            decisions.append(Decision(source, "unresolved", reason))
-            blocking.append(f"{source}: {reason}")
-            continue
         if previous is not None:
             older = parse_message_date(dates.get(source))
             newer = parse_message_date(dates.get(previous["src"]))
-            if older is not None and newer is not None and older < newer:
+            if older is not None and newer is not None and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
                 if matches:
                     reason = f"Retrospective correction needs review ({older.isoformat()} < {newer.isoformat()})"
                     decisions.append(Decision(source, "unresolved", reason))
@@ -180,6 +190,11 @@ def apply_update(state, extraction):
                 reason = f"Stale update {older.isoformat()} < {newer.isoformat()} from {previous['src']}"
                 decisions.append(Decision(source, "superseded", reason))
                 continue
+        if target is not None and not matches:
+            reason = "Correction target does not match the active claim"
+            decisions.append(Decision(source, "unresolved", reason))
+            blocking.append(f"{source}: {reason}")
+            continue
         if claim.kind == "directive":
             candidate = active.copy()
             candidate[claim.identity] = record

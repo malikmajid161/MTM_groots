@@ -202,23 +202,24 @@ def source_dates(sources):
         lines = text.splitlines()
         if not lines or not lines[0].lower().startswith("from:"):
             continue
+        inline = re.search(r"\|\s*Date:\s*(.+)$", lines[0], re.I)
+        candidates = [inline.group(1)] if inline else []
         for line in lines[1:]:
             field, separator, value = line.partition(":")
             if not separator or field.lower() not in {"date", "to", "subject"}:
                 break
-            if field.lower() != "date":
-                continue
-            value = value.strip()
+            if field.lower() == "date":
+                candidates.append(value.strip())
+        for value in candidates:
             try:
                 try:
                     date = datetime.fromisoformat(value)
                 except ValueError:
                     date = parsedate_to_datetime(value)
-                if date.utcoffset() is not None:
-                    dates[source] = date.isoformat()
+                dates[source] = date.isoformat()
+                break
             except (TypeError, ValueError, OverflowError):
                 pass
-            break
     return dates
 
 

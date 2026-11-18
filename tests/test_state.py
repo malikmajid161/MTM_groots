@@ -38,7 +38,7 @@ class StateTests(unittest.TestCase):
         record = claim("food", "vendor_item", "meal", "quantity", 12,
                        src="change", kind="directive", actor="organizer", u="meals")
         for scopes, outcome, reason in (
-            ({}, "unresolved", "Authority could not be verified"),
+            ({}, "rejected", "Authority could not be verified"),
             ({"change": ["judging"]}, "rejected", "exclude food"),
             ({"change": ["food"]}, "rejected", "Requested 12 meals; current plan requires 25 meals"),
         ):
