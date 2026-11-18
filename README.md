@@ -57,6 +57,16 @@ CSV, structured JSON, PDF and ZIP are not supported as direct structured inputs.
 
 Keep `runtime/` in place between updates. Exact duplicate files are ignored without model calls. To start a separate scenario, preserve its evidence and move the existing `runtime/` directory aside first. Concurrent updates to the same session are blocked by a session lock.
 
+## Minimal result page
+
+After running the planner, generate an offline summary page:
+
+```bash
+python ui.py runtime/session.json
+```
+
+Open `runtime/result.html` in a browser. It shows the current status, five planning areas, blocking issues, latest decisions and links to the full trace. Failed runs clearly label any previous saved result. The page reads saved evidence only and makes no model calls. Regenerate it after subsequent runs to display the latest session.
+
 ## Processing and validation
 
 1. Read the original messages and preserve source references.
