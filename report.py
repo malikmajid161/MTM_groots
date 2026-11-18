@@ -15,12 +15,14 @@ def sections(session):
     yield title, pretty({"status": result.get("status", "UNVERIFIED"), "plan": result.get("plan")})
     if result.get("last_valid") is not None and result.get("status") != "VALID":
         yield "Last valid plan", pretty(result["last_valid"])
+    sources = dict(result.get("ledger", {}).get("sources", ()))
     decisions = [
         {"run": run["number"], **decision}
         for run in session["runs"] for decision in run.get("decisions", [])
     ]
     yield "Rejected and unresolved messages", pretty([
-        decision for decision in decisions if decision.get("outcome") in {"rejected", "unresolved"}
+        {**decision, "message": sources.get(decision.get("source"))}
+        for decision in decisions if decision.get("outcome") in {"rejected", "unresolved"}
     ])
     for run in session["runs"]:
         details = {key: value for key, value in run.items() if key != "calls"}

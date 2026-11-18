@@ -96,6 +96,7 @@ class ModelCall:
     total_tokens: int | None = None
     elapsed_seconds: float | None = None
     error: str | None = None
+    configured_model: str | None = None
 
 
 class Recorder(Protocol):

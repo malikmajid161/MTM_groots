@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from email.utils import parsedate_to_datetime
@@ -39,16 +40,41 @@ def atomic_write(path, content):
         temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def session_lock(runtime):
+    # Keep the lock file in place so processes always lock the same file.
+    with (runtime / ".session.lock").open("a+b") as lock:
+        lock.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            acquire = lambda: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            acquire = lambda: fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            acquire()
+        except OSError as error:
+            raise OSError("Could not lock this session. Retry after the active run finishes.") from error
+        yield
+
+
 def run(path, runtime, extract, apply_update):
     started = monotonic()
     batch = load_input(path)
     runtime.mkdir(parents=True, exist_ok=True)
+    with session_lock(runtime):
+        return run_session(batch, runtime, extract, apply_update, started)
+
+
+def run_session(batch, runtime, extract, apply_update, started):
     session_path = runtime / "session.json"
     session = (
         json.loads(session_path.read_text(encoding="utf-8"))
         if session_path.exists() else {"result": None, "sources": {}, "runs": []}
     )
-    updating = session_path.exists()
+    updating = session["result"] is not None
     budget = RunBudget(started + (55 if updating else 115), 5 if updating else None)
     calls = []
     offset = sum(len(run["calls"]) for run in session["runs"])
@@ -65,7 +91,8 @@ def run(path, runtime, extract, apply_update):
     if updating and prediction_path.exists():
         prediction = sorted(set(prediction_path.read_text(encoding="utf-8").split()))
         if set(prediction) - {"reading", "venue", "schedule", "food", "judging", "budget"}:
-            raise ValueError("Prediction contains an invalid model-call tag")
+            run_log["prediction_error"] = "Prediction contains an invalid model-call tag"
+            prediction = None
 
     def record(call):
         calls.append({"number": offset + len(calls) + 1, **asdict(call)})
@@ -147,6 +174,7 @@ def extract_for_cli(batch, context, budget, record):
                 total_tokens=usage["total_tokens"],
                 elapsed_seconds=row["elapsed_seconds"],
                 error=row["error"],
+                configured_model=row["model"],
             ))
 
     messages = message_sources(batch)

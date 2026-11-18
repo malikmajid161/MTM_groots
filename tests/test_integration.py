@@ -67,3 +67,46 @@ class IntegrationTests(unittest.TestCase):
             budget.reserve_attempt()
         with self.assertRaises(BudgetExceeded):
             RunBudget(monotonic() - 1, None).reserve_attempt()
+
+    def test_failed_initial_run_can_retry_with_initial_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pack.txt"
+            source.write_text("Original workshop pack", encoding="utf-8")
+            runtime = root / "runtime"
+            limits = []
+
+            def extract(batch, context, budget, record):
+                limits.append(budget.max_attempts)
+                if len(limits) == 1:
+                    raise RuntimeError("Mock provider unavailable")
+                return Extraction()
+
+            def planner(ledger, extraction):
+                return UpdateResult({}, {}, "VALID")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run(source, runtime, extract, planner), 1)
+                self.assertEqual(run(source, runtime, extract, planner), 0)
+                source.write_text("Updated workshop pack", encoding="utf-8")
+                (runtime / "predicted_tags.txt").write_text("invalid", encoding="utf-8")
+                self.assertEqual(run(source, runtime, extract, planner), 0)
+
+            self.assertEqual(limits, [None, None, 5])
+            session = json.loads((runtime / "session.json").read_text(encoding="utf-8"))
+            self.assertEqual([entry["status"] for entry in session["runs"]],
+                             ["failed", "completed", "completed"])
+            self.assertIn("prediction_error", session["runs"][-1])
+
+    def test_concurrent_run_cannot_overwrite_session(self):
+        from main import session_lock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pack.txt"
+            source.write_text("Workshop pack", encoding="utf-8")
+            with session_lock(root):
+                with self.assertRaisesRegex(OSError, "active run"):
+                    run(source, root, None, None)
+            with session_lock(root):
+                self.assertFalse((root / "session.json").exists())
