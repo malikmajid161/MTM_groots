@@ -96,3 +96,49 @@ class BundleRegressions(unittest.TestCase):
         ]})
         self.assertTrue(any(item['issue']=='dangling activity reference' for item in findings))
         self.assertTrue(any(item['issue']=='possible duplicate temporal resource identity' for item in findings))
+
+    def test_numbered_headers_and_partial_dates_preserve_message_order(self):
+        from contracts import InputBatch
+        from main import message_sources
+        body='#1 | From: Office | Date: 9 Nov\nNew price\n\n#2 | From: Office | Date: 2 Nov\nOld price\n'
+        sources=message_sources(InputBatch('pack','messages.txt',body))
+        self.assertEqual(len(sources),2)
+        self.assertEqual(source_dates(sources),{'pack:1':'--11-09','pack:2':'--11-02'})
+        initial=apply_update(None,{'claims':fixture(),'trusted_message_dates':{'initial':'--11-09'}}).state
+        old=claim('budget','expense','existing','committed_cost',1,src='old',currency='PKR')
+        result=apply_update(initial,{'claims':[old],'trusted_message_dates':{'old':'--11-02'}})
+        self.assertEqual(result.decisions[0].outcome,'superseded')
+
+    def test_service_charge_unavailable_venue_and_explicit_area_costs(self):
+        rows=fixture()+[
+            claim('food','event','event','service_charge_rate',0.1),
+            claim('venue','venue_option','cheaper','capacity',40),
+            claim('venue','venue_option','cheaper','unit_price',1,price_basis='fixed',currency='PKR'),
+            claim('venue','venue_option','cheaper','engagement_rule','unavailable'),
+        ]
+        plan=apply_update(None,{'claims':rows}).state.plan
+        self.assertEqual(plan.status,'VALID',plan.issues)
+        self.assertEqual(plan.areas['venue']['option'],'hall')
+        self.assertEqual(plan.areas['food']['cost'],'267.3')
+        self.assertEqual(plan.areas['judging']['cost'],'36')
+        self.assertEqual(plan.areas['venue']['cost'],'55')
+        self.assertEqual(plan.areas['budget']['total'],'401.3')
+        self.assertTrue(plan.areas['budget']['fits'])
+
+    def test_ground_floor_ramp_matches_step_free_requirement(self):
+        rows=fixture()+[
+            claim('venue','event','event','required_feature',['step-free access']),
+            claim('venue','venue_option','hall','required_feature',['ground-floor ramp access']),
+        ]
+        plan=apply_update(None,{'claims':rows}).state.plan
+        self.assertEqual(plan.status,'VALID',plan.issues)
+        from plan import feature_set
+        self.assertNotIn('step free access',feature_set(['ramp access']))
+
+    def test_uncommitted_meal_quotes_are_options_without_invented_rules(self):
+        rows=[r for r in fixture() if r['k']!='quantity']+[
+            claim('food','vendor_item','alternative','unit_price',8,price_basis='per_item',currency='PKR')]
+        plan=apply_update(None,{'claims':rows}).state.plan
+        self.assertEqual(plan.status,'VALID',plan.issues)
+        self.assertEqual(plan.areas['food']['item'],'alternative')
+        self.assertEqual(plan.areas['budget']['total'],'334')

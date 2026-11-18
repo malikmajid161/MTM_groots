@@ -69,7 +69,7 @@ def readable_lines(value, indent=0):
                 yield prefix + label + ':'
                 yield from readable_lines(item, indent + 2)
             else:
-                yield prefix + label + ': ' + str(item)
+                yield prefix + label + ': ' + ('Yes' if item is True else 'No' if item is False else str(item))
     elif isinstance(value, (list, tuple)):
         for item in value:
             if isinstance(item, (dict, list, tuple)):
@@ -111,7 +111,28 @@ def render_plan(session):
 
 
 def render_trace(session):
-    lines = ['CUMULATIVE EXECUTION TRACE', '', 'INPUT EVIDENCE', pretty(session.get('sources', {}))]
+    calls = [call for run in session.get('runs', []) for call in run.get('calls', [])]
+    lines = ['CUMULATIVE EXECUTION TRACE', '', 'AI CALL SUMMARY']
+    for call in calls:
+        purpose = call.get('area', 'unknown')
+        if purpose == 'reading':
+            payload = call.get('input') or {}
+            messages = payload.get('messages', []) if isinstance(payload, dict) else payload
+            reviewing = False
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                if 'draft_extraction' in message:
+                    reviewing = True
+                elif message.get('role') == 'user':
+                    try:
+                        reviewing |= 'draft_extraction' in json.loads(message.get('content', '{}'))
+                    except (ValueError, TypeError):
+                        pass
+            purpose = 'Reviewing extracted facts' if reviewing else 'Reading messages' 
+        tokens = call.get('total_tokens')
+        lines.append(f"Call {call['number']} | Model: {call.get('configured_model') or call.get('model', 'unknown')} | Purpose: {purpose} | Tokens: {tokens if tokens is not None else 'unknown'}" + (' | FAILED' if call.get('error') else ''))
+    lines += ['', 'INPUT EVIDENCE', pretty(session.get('sources', {}))]
     calls = []
     for run in session.get('runs', []):
         lines += ['', f"RUN {run['number']}", pretty({key: value for key, value in run.items() if key != 'calls'})]

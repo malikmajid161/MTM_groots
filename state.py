@@ -46,7 +46,7 @@ DEPENDENCIES = {
 
 def parse_message_date(value):
     try:
-        date = datetime.fromisoformat(value)
+        date = datetime.strptime(value + ';2000', '--%m-%d;%Y') if isinstance(value, str) and value.startswith('--') else datetime.fromisoformat(value)
         return date
     except (TypeError, ValueError):
         return None
@@ -65,7 +65,7 @@ def apply_update(state, extraction):
     for source, raw_date in extraction.get("trusted_message_dates", {}).items():
         date = parse_message_date(raw_date)
         if date is not None:
-            dates.setdefault(source, date.isoformat())
+            dates.setdefault(source, raw_date)
     history = list(state.history)
     decisions = []
     affected = set()
@@ -98,7 +98,7 @@ def apply_update(state, extraction):
             continue
         if previous is not None:
             older, newer = parse_message_date(dates.get(source)), parse_message_date(dates.get(previous.get("src")))
-            if older is not None and newer is not None and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
+            if older is not None and newer is not None and (str(dates.get(source)).startswith("--") == str(dates.get(previous.get("src"))).startswith("--")) and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
                 decisions.append(Decision(source, "unresolved", "Retrospective constraint correction needs review"))
                 blocking.append(f"{source}: retrospective constraint correction needs review")
                 continue
@@ -175,13 +175,13 @@ def apply_update(state, extraction):
         review_match = next((item for item in pending
                              if target and target == item["record"].get("claim_id")), None)
         matches = review_match is not None or target is not None and previous is not None and (
-            target == previous.get("claim_id") or
+            target == previous.get("claim_id") or target == previous.get("id") or
             ("corrects" in record and target == previous["src"])
         )
         if previous is not None:
             older = parse_message_date(dates.get(source))
             newer = parse_message_date(dates.get(previous["src"]))
-            if older is not None and newer is not None and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
+            if older is not None and newer is not None and (str(dates.get(source)).startswith("--") == str(dates.get(previous.get("src"))).startswith("--")) and (older.utcoffset() is None) == (newer.utcoffset() is None) and older < newer:
                 if matches:
                     reason = f"Retrospective correction needs review ({older.isoformat()} < {newer.isoformat()})"
                     decisions.append(Decision(source, "unresolved", reason))

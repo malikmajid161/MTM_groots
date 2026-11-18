@@ -144,7 +144,7 @@ def run_session(batch, runtime, extract, apply_update, started):
 
 def message_sources(batch):
     # Only split at explicit, unquoted headers. Preserve any leading preamble.
-    headers = list(re.finditer(r"(?im)^From:[ \t]+[^\r\n]+", batch.text))
+    headers = list(re.finditer(r"(?im)^(?:#\d+[ \t]*\|[ \t]*)?From:[ \t]+[^\r\n]+", batch.text))
     starts = [0, *(match.start() for match in headers if match.start())]
     if len(starts) == 1:
         return {batch.source_id: batch.text}
@@ -202,7 +202,7 @@ def source_dates(sources):
     dates = {}
     for source, text in sources.items():
         lines = text.splitlines()
-        if not lines or not lines[0].lower().startswith("from:"):
+        if not lines or not re.match(r"(?i)^(?:#\d+\s*\|\s*)?From:", lines[0]):
             continue
         inline = re.search(r"\|\s*Date:\s*(.+)$", lines[0], re.I)
         candidates = [inline.group(1)] if inline else []
@@ -217,7 +217,12 @@ def source_dates(sources):
                 try:
                     date = datetime.fromisoformat(value)
                 except ValueError:
-                    date = parsedate_to_datetime(value)
+                    try:
+                        date = parsedate_to_datetime(value)
+                    except (TypeError, ValueError):
+                        date = datetime.strptime(value + ';2000', '%d %b;%Y')
+                        dates[source] = date.strftime('--%m-%d')
+                        break
                 dates[source] = date.isoformat()
                 break
             except (TypeError, ValueError, OverflowError):

@@ -16,7 +16,7 @@ COUNT_KEYS = frozenset((
 ))
 PRICE_KEYS = frozenset(("unit_price", "budget_cap", "committed_cost", "delivery_cost"))
 KEYS = COUNT_KEYS | PRICE_KEYS | {
-    "start_time", "end_time", "availability_window", "required_feature", "engagement_rule", "meal_fraction", "preference_rank", "meal_coverage"
+    "start_time", "end_time", "availability_window", "required_feature", "engagement_rule", "meal_fraction", "preference_rank", "meal_coverage", "service_charge_rate"
 }
 KINDS = frozenset(("fact", "directive", "proposal", "warning", "reported_action"))
 
@@ -47,7 +47,16 @@ def feature_set(value):
         return set()
     if any(not isinstance(name, str) or not name.strip() for name in names):
         return set()
-    return {name.strip().casefold() for name in names}
+    features = {' '.join(name.strip().casefold().replace('_', ' ').replace('-', ' ').split()) for name in names}
+    # Supported accessibility evidence: a ramp together with a ground-floor
+    # location supplies a step-free route. A ramp alone does not prove that.
+    ground = any('ground floor' in name for name in features)
+    ramp = any('ramp' in name for name in features)
+    if ground and ramp:
+        features.add('step free access')
+    if any(name.startswith('step free access') for name in features):
+        features.add('step free access')
+    return features
 
 
 def parse_stamp(value):
@@ -146,7 +155,7 @@ def normalize_claim(record):
         reason = "operator requires a constraint evaluator"
     elif key == "meal_coverage" and value != "all_attendees":
         reason = "unsupported meal coverage rule"
-    elif key == "meal_fraction":
+    elif key in {"meal_fraction", "service_charge_rate"}:
         try:
             if not 0 <= Decimal(str(value)) <= 1:
                 raise ValueError
@@ -173,7 +182,7 @@ def normalize_claim(record):
                 raise InvalidOperation
         except InvalidOperation:
             reason = "expected a finite nonnegative amount"
-    elif key == "engagement_rule" and value not in ("required", "optional"):
+    elif key == "engagement_rule" and value not in (("required", "optional", "unavailable") if entity_type == "venue_option" else ("required", "optional")):
         reason = "engagement must be required or optional"
     elif key in {"start_time", "end_time"}:
         try:
@@ -324,6 +333,8 @@ def build_plan(claims, constraints=()):
     students = read(event, "student_count")
     team_size = read(event, "team_size")
     staff = read(event, "staff_count")
+    if staff is None and select("staff"):
+        staff = sum(read(group, "staff_count", 0) for _, group in select("staff"))
     available = read(event, "judge_count")
     if available is None:
         pools = select("judge")
@@ -355,12 +366,20 @@ def build_plan(claims, constraints=()):
             "Missing headcount, judging window, throughput or budget data."
         ]))
 
+    free_minutes = 0
     relative = start is None and end is None
     if relative:
         other_duration = sum(read(group, "duration_minutes", 0)
                              for name, group in select("activity") if name != activity_id)
         if event_duration is None:
             return Plan("UNVERIFIED", areas, tuple(issues + ["A judging window or event duration is required."]))
+        if duration is None and not any(item.get('family') == 'time_order' for item in hard_constraints):
+            team_count = (students + team_size - 1) // team_size
+            needed_judges = (team_count + judge_cap - 1) // judge_cap if judge_cap else 0
+            judging_minutes = ((team_count + needed_judges - 1) // needed_judges) * team_minutes if needed_judges else 0
+            if 0 < judging_minutes <= event_duration - other_duration:
+                duration = judging_minutes
+                free_minutes = event_duration - other_duration - duration
         duration = duration if duration is not None else event_duration - other_duration
         # Internal origin only; relative outputs never assert a calendar date.
         start = datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -445,7 +464,11 @@ def build_plan(claims, constraints=()):
         areas["schedule"]["chosen_duration_minutes"] = chosen_durations
     if relative:
         # Place duration-only activities in an order satisfying supported edges.
-        names = list(intervals)
+        if free_minutes:
+            intervals['Event working time'] = (origin, origin + timedelta(minutes=free_minutes))
+            names = ['Event working time', *(name for name in intervals if name not in {activity_id, 'Event working time'}), activity_id]
+        else:
+            names = list(intervals)
         edges = {name: set() for name in names}
         for item in hard_constraints:
             payload = item.get("payload", {})
@@ -478,7 +501,7 @@ def build_plan(claims, constraints=()):
     if len(intervals) > 1:
         areas["schedule"]["activities"] = {
             name: {"start": stamp(begin), "end": stamp(finish)}
-            for name, (begin, finish) in intervals.items()
+            for name, (begin, finish) in sorted(intervals.items(), key=lambda item: item[1][0])
         }
     event_start = declared_begin if declared_begin is not None else min(begin for begin, _ in intervals.values())
     event_end = declared_finish if declared_finish is not None else max(finish for _, finish in intervals.values())
@@ -516,6 +539,7 @@ def build_plan(claims, constraints=()):
         })
     currency, limit = budget
     delivery = cost(event, "delivery_cost", {"": 1}) or (currency, Decimal(0))
+    service_rate = Decimal(str(read(event, "service_charge_rate", 0)))
     if delivery[0] != currency:
         issues.append("Delivery currency does not match the event budget")
     committed = [cost(group, "committed_cost", {"": 1}) for _, group in select("expense")]
@@ -554,6 +578,7 @@ def build_plan(claims, constraints=()):
     venues, meals = select("venue_option"), select("vendor_item")
     if not venues or not meals:
         issues.append("Venue and meal options are required")
+    venue_rules = {name: read(group, "engagement_rule") for name, group in venues}
     venue_capacities = {name: read(group, "capacity") for name, group in venues}
     meal_quantities = {name: read(group, "quantity") for name, group in meals}
     for _, option in (*venues, *meals):
@@ -566,8 +591,6 @@ def build_plan(claims, constraints=()):
                       if rule == "required" and meal_fractions[name] is None}
     if len(required_meals) > 1:
         issues.append("Multiple required meal items need an explicit multi-item plan")
-    elif len(meals) > 1 and not required_meals and not components and any(rule is None and "preference_rank" not in group for name, group in meals for rule in [meal_rules[name]]):
-        issues.append("Meal substitution terms are missing")
     for name, value in venue_capacities.items():
         if value is None:
             issues.append(f"{name}: a capacity or meal quantity is missing")
@@ -626,6 +649,8 @@ def build_plan(claims, constraints=()):
                 continue
             people = students + staff + len(engaged)
             for venue_id, venue in venues:
+                if venue_rules[venue_id] == "unavailable":
+                    continue
                 features = venue_features[venue_id]
                 if required_features and features is None:
                     candidate_gaps.append(f"{venue_id}: required venue features are unverified")
@@ -689,7 +714,8 @@ def build_plan(claims, constraints=()):
                     if any(item is None or item[0] != currency for item in part_prices):
                         candidate_gaps.append(f"{meal_id}: missing component price or mismatched currency")
                         continue
-                    meal_price = currency, sum(item[1] for item in part_prices) + delivery[1]
+                    food_subtotal = sum(item[1] for item in part_prices) + delivery[1]
+                    meal_price = currency, food_subtotal * (1 + service_rate)
                     prices = [venue_price, meal_price, *committed,
                               *(judge_prices[judge] for judge in engaged)]
                     if any(item is None or item[0] != currency for item in prices):
@@ -758,13 +784,14 @@ def build_plan(claims, constraints=()):
             "end": stamp(slot_end),
         })
     people = students + staff + len(engaged)
-    areas["venue"] = {"option": venue_id, "people": people, "capacity": venue_capacities[venue_id]}
-    areas["food"] = {"item": meal_id, "quantity": best_quantity, "required": people}
+    areas["venue"] = {"option": venue_id, "people": people, "capacity": venue_capacities[venue_id], "cost": str(best_costs["venue"]), "currency": currency}
+    areas["food"] = {"item": meal_id, "quantity": best_quantity, "required": people, "cost": str(best_costs["food"]), "currency": currency}
     if components:
         areas["food"]["items"] = best_parts
     areas["food"]["delivery"] = str(delivery[1])
-    areas["judging"].update(engaged=engaged, assignments=assignments)
+    areas["judging"].update(engaged=engaged, engaged_count=len(engaged), cost=str(best_costs["judging"]), currency=currency, assignments=assignments)
     areas["budget"]["total"] = str(total)
+    areas["budget"].update(fits=total <= limit, remaining=str(limit-total))
     areas["budget"]["breakdown"] = {key: str(value) for key, value in best_costs.items()}
     if extras:
         areas["budget"]["extras"] = {item: str(amount) for item, amount in extras.items()}
