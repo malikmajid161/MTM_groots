@@ -57,3 +57,71 @@ def render(session):
         '</style><main><h1>Hackathon plan and trace</h1>' + body + '</main></html>'
     )
     return plain, html
+
+
+def readable_lines(value, indent=0):
+    """Format a plan as labeled text, without provider payloads."""
+    prefix = ' ' * indent
+    if isinstance(value, dict):
+        for key, item in value.items():
+            label = key.replace('_', ' ').capitalize()
+            if isinstance(item, (dict, list, tuple)):
+                yield prefix + label + ':'
+                yield from readable_lines(item, indent + 2)
+            else:
+                yield prefix + label + ': ' + str(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, (dict, list, tuple)):
+                yield prefix + '-'
+                yield from readable_lines(item, indent + 2)
+            else:
+                yield prefix + '- ' + str(item)
+
+
+def render_plan(session):
+    result = session.get('result') or {}
+    runs = session.get('runs') or []
+    latest = runs[-1] if runs else {}
+    plan = result.get('plan') or {}
+    lines = ['EVENT PLAN', 'Status: ' + result.get('status', 'NO RESULT'), '']
+    if latest.get('status') == 'failed':
+        lines += ['Latest attempt failed: ' + latest.get('error', 'Unknown error'),
+                  'Any saved plan below belongs to an earlier run.' if result else 'No plan was generated.', '']
+    if result.get('status') == 'UNVERIFIED':
+        lines += ['The plan could not be verified. This is not an approved plan.', '']
+    elif result.get('status') == 'INFEASIBLE':
+        lines += ['No candidate satisfies the supported requirements.', '']
+    if plan.get('issues'):
+        lines += ['NEEDS ATTENTION', *('- ' + str(issue) for issue in plan['issues']), '']
+    areas = plan.get('areas') or {}
+    if not any(areas.values()):
+        lines += ['No complete plan is available.', '']
+    for area in ('venue', 'schedule', 'food', 'judging', 'budget'):
+        lines += [area.upper()]
+        values = areas.get(area) or {}
+        lines += list(readable_lines(values)) if values else ['Not available.']
+        lines += ['']
+    decisions = [item for item in latest.get('decisions', []) if item.get('outcome') in {'rejected', 'unresolved'}]
+    if decisions:
+        lines += ['MESSAGE DECISIONS', *(f"- {item['outcome']}: {item.get('reason', '')}" for item in decisions), '']
+    if result.get('last_valid') and result.get('status') != 'VALID':
+        lines += ['HISTORICAL LAST-VALID PLAN (not the current plan)', *readable_lines(result['last_valid']), '']
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def render_trace(session):
+    lines = ['CUMULATIVE EXECUTION TRACE', '', 'INPUT EVIDENCE', pretty(session.get('sources', {}))]
+    calls = []
+    for run in session.get('runs', []):
+        lines += ['', f"RUN {run['number']}", pretty({key: value for key, value in run.items() if key != 'calls'})]
+        for call in run.get('calls', []):
+            calls.append(call)
+            lines += ['', f"MODEL CALL {call['number']} | {call.get('model', 'unknown')} | {call.get('area', 'unknown')}", pretty(call)]
+    usage = [call.get('total_tokens') for call in calls]
+    missing = usage.count(None)
+    subtotal = sum(value for value in usage if value is not None)
+    lines += ['', 'TOKEN TOTALS', f'Model attempts: {len(calls)}']
+    lines += [f'Total tokens: {subtotal}' if not missing else
+              f'Total tokens: unknown; reported subtotal: {subtotal}; unavailable for {missing} of {len(calls)} calls']
+    return '\n'.join(lines) + '\n'

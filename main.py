@@ -15,7 +15,7 @@ from tempfile import NamedTemporaryFile
 from time import monotonic
 
 from contracts import Extraction, InputBatch, ModelCall, RunBudget, UpdateResult
-from report import render
+from report import render, render_plan, render_trace
 
 
 def load_input(path):
@@ -132,6 +132,8 @@ def run_session(batch, runtime, extract, apply_update, started):
     session["runs"].append(run_log)
     plain, html = render(session)
     atomic_write(session_path, json.dumps(session, ensure_ascii=False, allow_nan=False))
+    atomic_write(runtime / "plan.txt", render_plan(session))
+    atomic_write(runtime / "trace.txt", render_trace(session))
     atomic_write(runtime / "submission.txt", plain)
     atomic_write(runtime / "report.html", html)
     if prediction is not None:

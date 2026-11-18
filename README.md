@@ -92,6 +92,8 @@ Unauthorized reported amendments do not overwrite approved orders. Credible exte
 | File | Contents |
 | --- | --- |
 | `runtime/session.json` | Current ledger/result, last-valid snapshot, sources and cumulative runs. |
+| `runtime/plan.txt` | Readable current plan/status, issues and key message decisions. |
+| `runtime/trace.txt` | Separate cumulative input evidence, model calls, errors, timing and reported usage. |
 | `runtime/submission.txt` | Plain-text plan, decisions, full traces and reported usage. |
 | `runtime/report.html` | Self-contained offline HTML report. |
 
