@@ -64,26 +64,39 @@ def make_server(port=8000, initial=None, extractor=extract_for_cli, planner=plan
             self.send(404, {'message': 'Not found'})
 
         def do_POST(self):
-            if self.path != '/api/sessions':
+            if self.path not in ('/api/sessions', '/api/updates'):
                 return self.send(404, {'message': 'Not found'})
             # Only the local dashboard may start model requests; no cross-origin uploads.
             origin = self.headers.get('Origin')
             if origin and origin != 'http://' + self.headers.get('Host', ''):
                 return self.send(403, {'message': 'Cross-origin requests are not allowed'})
-            if self.headers.get_content_type() != 'text/plain':
+            is_update = self.path == '/api/updates'
+            if self.headers.get_content_type() != ('application/json' if is_update else 'text/plain'):
                 return self.send(415, {'message': 'Upload a UTF-8 messages TXT file'})
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= MAX_UPLOAD:
                     raise ValueError('Choose a nonempty TXT file smaller than 2 MB')
                 raw = self.rfile.read(length)
+                seed = None
+                if is_update:
+                    payload = json.loads(raw)
+                    seed = payload.get('session')
+                    message = payload.get('message')
+                    if not isinstance(seed, dict) or not seed.get('result') or not isinstance(seed.get('runs'), list) or not isinstance(seed.get('sources'), dict):
+                        raise ValueError('Open or create a completed session before adding an update')
+                    if not isinstance(message, str):
+                        raise ValueError('Enter an update message')
+                    raw = message.encode('utf-8')
                 if not raw.decode('utf-8-sig').strip():
                     raise ValueError('Messages file is empty')
-            except (ValueError, UnicodeError) as error:
+            except (ValueError, UnicodeError, AttributeError) as error:
                 return self.send(400, {'message': str(error)})
             job = uuid4().hex
             destination = ROOT / 'runtime' / 'ui' / job
             destination.mkdir(parents=True)
+            if seed is not None:
+                (destination / 'session.json').write_text(json.dumps(seed), encoding='utf-8')
             path = destination / 'messages.txt'
             path.write_bytes(raw)
             with lock:

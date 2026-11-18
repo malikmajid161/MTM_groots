@@ -16,7 +16,12 @@ class UploadTests(unittest.TestCase):
         session = {'runs': [{'number': 1, 'status': 'completed', 'calls': []}],
                    'sources': {}, 'result': {'status': 'VALID', 'plan': {}}}
         def fake_run(path, destination, extract, plan):
-            self.assertEqual(path.read_text(), 'From: organiser\nHello')
+            if (destination / 'session.json').exists():
+                prior = json.loads((destination / 'session.json').read_text())
+                self.assertEqual(prior, session)
+                self.assertEqual(path.read_text(), 'Finance: revised bill')
+            else:
+                self.assertEqual(path.read_text(), 'From: organiser\nHello')
             (destination / 'session.json').write_text(json.dumps(session))
         with TemporaryDirectory() as temp, patch.object(serve_ui, 'ROOT', Path(temp)), patch.object(serve_ui, 'run', fake_run):
             server = serve_ui.make_server(0)
@@ -35,6 +40,16 @@ class UploadTests(unittest.TestCase):
                     time.sleep(.01)
                 self.assertEqual(job['session'], session)
                 self.assertEqual(job['progress'], 100)
+                req = Request(base+'/api/updates', data=json.dumps({'session': session, 'message': 'Finance: revised bill'}).encode(), headers={'Content-Type': 'application/json'})
+                update_id = json.load(urlopen(req))['id']
+                for _ in range(100):
+                    updated = json.load(urlopen(base+'/api/jobs/'+update_id))
+                    if updated['status'] != 'running':
+                        break
+                    time.sleep(.01)
+                self.assertEqual(updated['status'], 'completed')
+                self.assertNotEqual(updated['directory'], job['directory'])
+
                 req = Request(base+'/api/sessions', data=b'bad', headers={'Content-Type': 'text/plain', 'Origin': 'https://example.com'})
                 with self.assertRaises(HTTPError) as caught:
                     urlopen(req)

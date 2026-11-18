@@ -791,9 +791,8 @@ uploadTarget.addEventListener("drop", event => {
 
 // Each messages upload starts an isolated planner session on the local server.
 const messagesUpload = document.querySelector("#messages-upload");
-messagesUpload.addEventListener("change", async () => {
-    const file = messagesUpload.files[0];
-    if (!file) return;
+async function submitMessages(file, updateText = null) {
+    const isUpdate = updateText !== null;
     const progress = document.querySelector("#run-progress");
     const message = document.querySelector("#run-message");
     const bar = document.querySelector("#run-bar");
@@ -806,11 +805,13 @@ messagesUpload.addEventListener("change", async () => {
     progress.hidden = false;
     messagesUpload.disabled = true;
     upload.disabled = true;
+    document.querySelector("#update-send").disabled = true;
     show(0, "Uploading messages…");
     try {
-        if (!file.name.toLowerCase().endsWith(".txt")) throw new Error("Choose a messages .txt file.");
+        if (!isUpdate && !file.name.toLowerCase().endsWith(".txt")) throw new Error("Choose a messages .txt file.");
         if (location.protocol === "file:") throw new Error("Start python3 serve_ui.py and open http://127.0.0.1:8000/ to run new sessions.");
-        const response = await fetch("/api/sessions", {method: "POST", headers: {"Content-Type": "text/plain; charset=utf-8"}, body: file});
+        if (isUpdate && !currentSession.result) throw new Error("Create or upload a session before adding an update.");
+        const response = await fetch(isUpdate ? "/api/updates" : "/api/sessions", {method: "POST", headers: {"Content-Type": isUpdate ? "application/json" : "text/plain; charset=utf-8"}, body: isUpdate ? JSON.stringify({message: updateText, session: currentSession}) : file});
         if (!response.ok) throw new Error((await response.json()).message || "Upload failed");
         const {id} = await response.json();
         const started = Date.now();
@@ -825,7 +826,8 @@ messagesUpload.addEventListener("change", async () => {
                     currentSession = job.session;
                     for (const {panel} of tabs.values()) panel.replaceChildren();
                     activate("plan");
-                    uploadStatus.textContent = file.name;
+                    uploadStatus.textContent = isUpdate ? "Update processed" : file.name;
+                    if (isUpdate && job.status !== "failed") document.querySelector("#update-message").value = "";
                 }
                 if (job.status === "failed") message.textContent = `Run failed: ${job.message}`;
                 break;
@@ -835,8 +837,28 @@ messagesUpload.addEventListener("change", async () => {
     } catch (error) {
         message.textContent = error.message;
     } finally {
+        document.querySelector("#update-send").disabled = false;
         messagesUpload.disabled = false;
         upload.disabled = false;
         messagesUpload.value = "";
     }
+
+}
+messagesUpload.addEventListener("change", () => {
+    const file = messagesUpload.files[0];
+    if (file) submitMessages(file);
+});
+const composer = document.querySelector("#update-composer");
+const updateToggle = document.querySelector("#update-toggle");
+function toggleComposer(open) {
+    composer.hidden = !open;
+    updateToggle.setAttribute("aria-expanded", String(open));
+    if (open) document.querySelector("#update-message").focus();
+}
+updateToggle.addEventListener("click", () => toggleComposer(composer.hidden));
+document.querySelector("#update-close").addEventListener("click", () => toggleComposer(false));
+composer.addEventListener("submit", event => {
+    event.preventDefault();
+    const text = document.querySelector("#update-message").value;
+    if (text.trim()) submitMessages(null, text);
 });

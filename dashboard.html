@@ -282,12 +282,19 @@ body,[data-theme=dark] body{background:radial-gradient(ellipse at 90% 0%,#aaa0bb
 <span id="page-title">Overview</span>
 <div class="row header-actions">
 <span id="upload-status" role="status"></span>
+<button id="update-toggle" type="button" class="secondary" aria-expanded="false" aria-controls="update-composer">Add update</button>
 <label class="upload-control">New session<input id="messages-upload" type="file" accept=".txt,text/plain" aria-label="New session from messages TXT"></label>
 <label class="upload-control" id="upload-target">Upload session<input id="session-upload" type="file" accept=".json,application/json" aria-label="Upload Groots session JSON"></label>
 <button type="button" id="theme-toggle" class="secondary theme-toggle" aria-label="Dark theme" aria-pressed="false">Dark theme</button>
 </div>
 </header>
 <div id="run-progress" class="card" hidden role="status" aria-live="polite"><span id="run-message"></span> <span id="run-percent"></span><progress id="run-bar" max="100" value="0" style="width:100%"></progress></div>
+<form id="update-composer" class="card" hidden style="margin:12px 0" aria-label="Update current plan">
+<label for="update-message">New message for this plan</label>
+<textarea id="update-message" rows="3" required placeholder="Paste the message exactly as received, including sender and date if available." style="display:block;width:100%;margin:10px 0;padding:12px;border-radius:12px;background:var(--panel);color:var(--ink);border:1px solid var(--line);font:inherit"></textarea>
+<div class="row"><button id="update-send" type="submit" class="secondary">Send update</button><button id="update-close" type="button" class="secondary">Close</button></div>
+<p>Updates reuse the current plan and retain its full trace.</p>
+</form>
 <main id="pages"></main>
 </div>
 <noscript><p class="card">Enable JavaScript to use the offline dashboard. The same run evidence is available in submission.txt.</p></noscript>
