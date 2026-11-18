@@ -34,6 +34,29 @@ class StateTests(unittest.TestCase):
         self.assertEqual(result.state.plan.status, "VALID")
         self.assertEqual(result.state.last_valid.status, "VALID")
 
+    def test_reported_reduction_explains_shortfall_for_derived_order(self):
+        records = [row for row in fixture()
+                   if not (row["et"] == "vendor_item" and row["k"] == "quantity")]
+        initial = apply_update(None, {"claims": records}).state
+        self.assertEqual(initial.plan.areas["food"]["quantity"], 25)
+
+        for item, unit, expected in (("meal", "boxes", True),
+                                     ("another meal", "boxes", False),
+                                     ("meal", "kg", False)):
+            with self.subTest(item=item, unit=unit):
+                record = claim("food", "vendor_item", item, "quantity", 12,
+                               src="supplier", kind="reported_action", u=unit)
+                result = apply_update(initial, {"claims": [record]})
+                decision = result.decisions[0]
+                self.assertEqual(decision.outcome, "rejected")
+                self.assertEqual(result.state.plan, initial.plan)
+                self.assertEqual(result.state.active, initial.active)
+                if expected:
+                    self.assertIn("reported 12 boxes, planned 25 meals", decision.reason)
+                    self.assertIn("required 25 meals, shortfall 13 meals", decision.reason)
+                else:
+                    self.assertNotIn("shortfall", decision.reason)
+
     def test_verified_directive_checks_scope_then_rolls_back_shortfall(self):
         record = claim("food", "vendor_item", "meal", "quantity", 12,
                        src="change", kind="directive", actor="organizer", u="meals")

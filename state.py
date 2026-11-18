@@ -139,9 +139,22 @@ def apply_update(state, extraction):
         if claim.kind == "reported_action":
             reason = "A reported action does not authorize an amendment"
             previous = active.get(claim.identity) if not claim.reason else None
+            unit = claim.unit or (previous or {}).get("u") or "items"
             if previous is not None and claim.key == "quantity":
-                unit = claim.unit or previous.get("u") or "items"
                 reason += f"; reported {claim.value} {unit}, approved {previous['v']} {unit}"
+            if (
+                not claim.reason and claim.area == "food" and claim.entity_type == "vendor_item"
+                and claim.key == "quantity" and not claim.scope
+                and unit.strip().casefold() in {"meal", "meals", "box", "boxes", "meal box",
+                                              "meal boxes", "item", "items", "serving", "servings"}
+                and state.plan is not None and state.plan.status == "VALID"
+            ):
+                food = state.plan.areas["food"]
+                required = food.get("required")
+                if food.get("item") == claim.entity_id and required is not None and claim.value < required:
+                    if previous is None:
+                        reason += f"; reported {claim.value} {unit}, planned {food['quantity']} meals"
+                    reason += f"; required {required} meals, shortfall {required - claim.value} meals"
             reason += "; supplier fulfillment requires confirmation"
             decisions.append(Decision(source, "rejected", reason))
             continue
