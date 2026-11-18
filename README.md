@@ -1,37 +1,133 @@
 # MTM Groots
 
-A message-driven hackathon planner. The organizer brief defines the judging requirements. The delivery board overrides conflicting parts of implementation plan v6.
+A message-driven event planner for venue, schedule, food, judging and budget decisions. It reads English and Roman Urdu messages, extracts structured evidence with an LLM, and uses Python to calculate and validate a plan. New message files update the existing session while preserving sources, decisions and model traces.
 
-## Run
+## Setup
 
-Use Python 3.10 or later. Export `MODEL_ENDPOINT`, `MODEL_NAME`, and `MODEL_API_KEY` as shown in `.env.example`. Supply `MODEL_APPROVED_MODELS` if using the organizer's allowlist.
+Use Python 3.10 or later. The backend uses the Python standard library.
 
-```text
+```bash
+cp .env.example .env
+```
+
+Fill in `MODEL_ENDPOINT`, `MODEL_NAME` and `MODEL_API_KEY`. Keep `.env` local; never commit credentials. The application does **not** automatically load `.env`. In Bash, export its settings before running:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Quote JSON values in `.env`, for example:
+
+```bash
+MODEL_OPTIONS_JSON='{"temperature":0,"max_tokens":8192}'
+```
+
+| Setting | Purpose |
+| --- | --- |
+| `MODEL_ENDPOINT` | Full chat-completions-compatible HTTPS endpoint. Local HTTP endpoints are allowed for testing. |
+| `MODEL_NAME` | Exact provider model ID. |
+| `MODEL_API_KEY` | Key used for the configured endpoint. Provider-specific key names alone do not configure the client. |
+| `MODEL_APPROVED_MODELS` | Optional comma-separated organizer allowlist of exact model IDs. |
+| `MODEL_OPTIONS_JSON` | Optional supported provider request parameters. |
+| `MODEL_STRICT_EXTRACTION` | Set to `1` for a provider supporting the strict extraction schema. |
+| `MODEL_VERIFY_EXTRACTION` | Set to `1` to review the initial extraction with a second recorded LLM call. |
+
+The tested Gemini configuration and alternative endpoint examples are in `.env.example`. Provider quota, availability and organizer model eligibility must be checked separately. The application does not silently switch models or retry failed requests.
+
+## Input and execution
+
+Supply a UTF-8 plain-text message file:
+
+```bash
 python main.py path/to/messages.txt
 ```
 
-Use the same command for the initial pack and every update. An existing session receives an update regardless of message count. Archive any submission evidence before moving the generated runtime directory aside to start a new session.
+The same command handles an initial pack and subsequent updates:
 
-## Integration
+```bash
+python main.py path/to/initial_pack.txt
+python main.py path/to/update.txt
+```
 
-The integration branch is `main`. Majid works on `codex/majid`. The extractor calls `budget.reserve_attempt()` immediately before each provider request and records every attempt, including errors, with the recorder. Use the remaining budget for the provider timeout. The planner receives a JSON-compatible ledger and the current extraction. Keep source references stable and preserve accepted facts even when a current plan cannot be verified.
+Explicit `From:` headers separate messages. Dates can appear on a separate `Date:` header or inline as `From: sender | Date: timestamp`. Comparable dates help prevent older facts replacing newer ones. A sender's stated title does not authenticate authority.
 
-`runtime/session.json` holds the committed session. `runtime/submission.txt` and `runtime/report.html` are regenerated from it. The local HTTP rehearsal runs the production CLI and planner with deterministic provider responses. Use a real configured provider for wording accuracy, latency and provider usage verification.
+CSV, structured JSON, PDF and ZIP are not supported as direct structured inputs. Extract message `.txt` files from a ZIP before running them. The expected-results document supplied with a test pack is for independent checking and must stay out of model input.
 
-Run the local suite with `python -m unittest discover -s tests`.
+Keep `runtime/` in place between updates. Exact duplicate files are ignored without model calls. To start a separate scenario, preserve its evidence and move the existing `runtime/` directory aside first. Concurrent updates to the same session are blocked by a session lock.
 
-For a prediction comparison, record the expected tags on the judging slip first. Optionally put the same whitespace-separated tags in `runtime/predicted_tags.txt` before the update. The report records the expected and actual tags and consumes the file.
+## Processing and validation
 
-The reader uses explicit message headers when present. A header date with a timezone can order comparable claims in the pack. A sender name in a text file does not verify authority. The planner leaves directives with unverifiable authority unresolved.
+1. Read the original messages and preserve source references.
+2. Extract JSON claims and typed constraints with one model call.
+3. When `MODEL_VERIFY_EXTRACTION=1`, make a second call to check omissions, resource identities and mappings against the messages.
+4. Apply updates and calculate candidates in Python; planning itself makes no model calls.
+5. Save the current result, separate last-valid snapshot, decisions and cumulative trace.
 
-## Judging handoff
+Normal configured runs use two LLM calls per file when extraction review is enabled. Empty or duplicate inputs use zero calls; failed runs may stop after one. Every attempt shares the run deadline and call budget. The CLI reserves 115 seconds for an initial run and 55 seconds for an update, leaving reporting headroom against the 120/60-second requirements. Updates allow at most five attempts. These limits do not guarantee provider availability.
 
-From the integrated checkout, confirm that `git status --porcelain` is empty and record the exact candidate with `git rev-parse HEAD`. Confirm that it matches the commit hash on GitHub before submitting the repo URL and hash. Move any practice `runtime/` directory aside after preserving its evidence.
+The backend supports local clock times and explicitly dated times, duration-only schedules, judge pools and individual judges, parallel judging assignments, venue features and availability, meal tiers and preferences, dietary portions within a total meal order, shared delivery charges, committed bills and supported typed constraints. Solver-selected durations for included activities without stated durations are exposed separately in the schedule.
 
-Run the judging pack and each subsequent message file through the same CLI command. Keep `runtime/` in place between updates. Record the prediction before the designated update. Verify the current plan or its explicit status, the rejection reason, numbered model attempts, and provider-reported token totals.
+| Status | Meaning |
+| --- | --- |
+| `VALID` | The candidate passes the implemented checks for the accepted structured evidence. This does not prove the LLM extracted every source requirement correctly. |
+| `INFEASIBLE` | No candidate satisfies the complete supported search and checks. |
+| `UNVERIFIED` | Missing evidence, unsupported semantics, unresolved issues or an incomplete search prevent proof. This is not a successful planning result. |
 
-After the last update, upload `runtime/submission.txt` and preserve a copy. Open `runtime/report.html` for the judges. Use Ismail's provider test evidence and Abdullah's planner acceptance results when deciding whether the integrated commit is ready.
+Unauthorized reported amendments do not overwrite approved orders. Credible external facts, such as reduced venue capacity, are retained even when they invalidate the current plan. A last-valid snapshot is historical evidence, not confirmation that the current facts remain feasible.
 
-## Backend/UI handoff
+## Generated evidence
 
-Abdullah owns the next UI work. The backend contract remains `UpdateResult` in `contracts.py`; current plan, last-valid plan, decisions, affected areas and full cumulative calls are saved in `runtime/session.json`. Preserve their distinction in the UI. `MODEL_VERIFY_EXTRACTION=1` optionally adds a recorded second extraction review using the same model, deadline and attempt budget. Both calls appear in the trace; unsupported semantics remain unresolved.
+| File | Contents |
+| --- | --- |
+| `runtime/session.json` | Current ledger/result, last-valid snapshot, sources and cumulative runs. |
+| `runtime/submission.txt` | Plain-text plan, decisions, full traces and reported usage. |
+| `runtime/report.html` | Self-contained offline HTML report. |
+
+Traces include numbered attempts, configured and returned model identifiers, inputs, outputs, errors and provider-reported token usage. Missing usage stays unknown; it is not fabricated. Failed provider attempts remain in the evidence.
+
+For a prediction comparison, record expected call tags **before** an update. For the current extraction/review pipeline:
+
+```bash
+printf 'reading\n' > runtime/predicted_tags.txt
+python main.py path/to/update.txt
+```
+
+The report compares the predicted and actual tag sets and consumes the prediction file. `reading` is the model-call tag; `general` is not a valid prediction tag. Record any required judging slip separately before execution.
+
+## Tests and current acceptance status
+
+```bash
+python -m unittest discover -s tests
+```
+
+At the published backend checkpoint, **70 automated tests pass**. These include mocked provider/CLI tests, generic planner regressions and captured-response replay. They are distinct from live language-extraction acceptance.
+
+| Supplied bundle | Verified result |
+| --- | --- |
+| Easy | Live initial and update passed; totals matched PKR 189,000 and PKR 191,000. |
+| Medium | Captured Gemini response replay through the fixed backend matched PKR 333,600 and PKR 360,600, including the venue switch. Fresh live attempts encountered provider HTTP 503 errors. |
+| Hard | Full live acceptance remains incomplete. Attempts exposed extraction, resource identity and constraint-mapping failures; they are not certified passes. |
+
+See [ISMAIL_LIVE_RESULTS.md](ISMAIL_LIVE_RESULTS.md) for evidence and failed experiments. Further fixes were stopped at the user's request after publishing this checkpoint. Passing the automated suite does not establish that all unseen packs work.
+
+## Modules and team handoff
+
+| Module | Responsibility |
+| --- | --- |
+| `extract.py` | Verbatim inputs, source aliases, extraction schema and review. |
+| `model_io.py` | Provider requests, bounded attempts and raw tracing. |
+| `plan.py` | Normalization, candidate search, assignments and deterministic checks. |
+| `state.py` | Update decisions, stale facts, corrections and last-valid state. |
+| `main.py` | CLI, session persistence, locking and integration adapters. |
+| `contracts.py` | Shared data contracts and run budget. |
+| `report.py` | Plain-text and offline HTML evidence. |
+
+`main` is the integration branch. Abdullah owns the UI work. The UI should use the `UpdateResult` contract and preserve the distinction between the current result, last-valid snapshot and failed run evidence. Food output may include component quantities and delivery; budget output includes a category breakdown.
+
+The delivery board in [AGILE_TASKS.md](AGILE_TASKS.md) records task ownership and overrides conflicting implementation-plan assumptions.
+
+## Submission handoff
+
+Preserve practice evidence before starting the official session. Verify a clean checkout and record `git rev-parse HEAD`; confirm that hash matches the submitted remote commit. Keep the same runtime session through all official updates, record the prediction before its designated update, and inspect the final plan/status and cumulative trace. Submit the requested repository/hash and upload `runtime/submission.txt` through the organizer's form. Model eligibility, official upload and teammate explanation rehearsal are separate acceptance steps.
