@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import sys
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -56,6 +57,13 @@ def run(path, runtime, extract, apply_update):
         "calls": calls,
     }
 
+    prediction_path = runtime / "predicted_tags.txt"
+    prediction = None
+    if updating and prediction_path.exists():
+        prediction = sorted(set(prediction_path.read_text(encoding="utf-8").split()))
+        if set(prediction) - {"reading", "venue", "schedule", "food", "judging", "budget"}:
+            raise ValueError("Prediction contains an invalid model-call tag")
+
     def record(call):
         calls.append({"number": offset + len(calls) + 1, **asdict(call)})
 
@@ -67,8 +75,8 @@ def run(path, runtime, extract, apply_update):
     else:
         try:
             previous = session["result"] or {}
-            ledger = previous.get("ledger", {})
-            extraction = extract(batch, ledger, budget, record)
+            ledger = deepcopy(previous.get("ledger", {}))
+            extraction = extract(batch, deepcopy(ledger), budget, record)
             candidate = asdict(apply_update(ledger, extraction))
             if not budget.remaining():
                 raise TimeoutError("Run exceeded the time reserved for planning")
@@ -83,6 +91,12 @@ def run(path, runtime, extract, apply_update):
             run_log["status"] = "failed"
             run_log["error"] = f"{type(error).__name__}: {error}"
 
+    if prediction is not None:
+        actual = sorted({call["area"] for call in calls})
+        run_log["prediction"] = {
+            "predicted": prediction, "actual": actual, "match": prediction == actual,
+        }
+
     run_log["attempts"] = budget.attempts
     run_log["seconds_before_reporting"] = round(monotonic() - started, 3)
     session["runs"].append(run_log)
@@ -90,6 +104,8 @@ def run(path, runtime, extract, apply_update):
     atomic_write(session_path, json.dumps(session, ensure_ascii=False, allow_nan=False))
     atomic_write(runtime / "submission.txt", plain)
     atomic_write(runtime / "report.html", html)
+    if prediction is not None:
+        prediction_path.unlink()
     print(plain, end="")
     return int(run_log["status"] == "failed")
 

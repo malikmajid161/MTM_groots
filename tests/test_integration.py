@@ -23,6 +23,7 @@ class IntegrationTests(unittest.TestCase):
                 record(ModelCall("mock", "reading", batch.text, "<script>", total_tokens=10))
                 calls.append((batch.text, context.copy(), budget.max_attempts))
                 if batch.text == "broken":
+                    context["revision"] = 99
                     raise ValueError("Malformed response")
                 return Extraction()
 
@@ -37,6 +38,8 @@ class IntegrationTests(unittest.TestCase):
                     (b"multi\r\nline\r\nupdate", 0),
                     (b"broken", 1),
                 ]:
+                    if payload == b"broken":
+                        (runtime / "predicted_tags.txt").write_text("reading", encoding="utf-8")
                     source.write_bytes(payload)
                     self.assertEqual(run(source, runtime, extract, apply_update), expected)
                     self.assertEqual(source.read_bytes(), payload)
@@ -46,6 +49,8 @@ class IntegrationTests(unittest.TestCase):
             session = json.loads((runtime / "session.json").read_text(encoding="utf-8"))
             self.assertEqual(session["result"]["ledger"]["revision"], 2)
             self.assertEqual(session["runs"][2]["calls"], [])
+            self.assertTrue(session["runs"][3]["prediction"]["match"])
+            self.assertFalse((runtime / "predicted_tags.txt").exists())
             submission = (runtime / "submission.txt").read_text(encoding="utf-8")
             self.assertIn("Model call 3 | mock | reading", submission)
             self.assertIn("Total tokens: 30", submission)

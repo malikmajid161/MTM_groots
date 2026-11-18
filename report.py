@@ -10,7 +10,8 @@ def pretty(value):
 
 def sections(session):
     result = session.get("result") or {}
-    yield "Current plan", pretty({
+    latest = session["runs"][-1]["status"]
+    yield ("Saved plan before failed run" if latest == "failed" else "Current plan"), pretty({
         "status": result.get("status", "UNVERIFIED"),
         "plan": result.get("plan"),
         "last_valid": result.get("last_valid"),
