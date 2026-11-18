@@ -75,3 +75,22 @@ class ExtractionTests(unittest.TestCase):
     def test_empty_result_not_silently_accepted(self):
         result=normalize({'claims':[],'irrelevant':[],'ambiguous':[]},self.batch)
         self.assertTrue(result['ambiguous'])
+
+    def test_multi_source_omission_requires_review(self):
+        batch=dict(self.batch,messages={'synthetic-source':self.batch['text'],'second':'A new resource constraint.'})
+        result=normalize({'claims':[self.claim],'irrelevant':[],'ambiguous':[]},batch)
+        self.assertEqual(result['ambiguous'][0]['src'],'second')
+        self.assertIn('omitted',result['ambiguous'][0]['reason'])
+        self.assertEqual(len(result['claims']),1)
+
+    def test_each_source_accounted_without_false_omission(self):
+        batch=dict(self.batch,messages={'synthetic-source':self.batch['text'],'second':'Thanks'})
+        result=normalize({'claims':[self.claim],'irrelevant':['second'],'ambiguous':[]},batch)
+        self.assertFalse(result['ambiguous'])
+        self.assertEqual(result['irrelevant'],['second'])
+
+    def test_other_span_must_come_from_its_actual_source(self):
+        batch=dict(self.batch,messages={'synthetic-source':self.batch['text'],'second':'Thanks'})
+        c=dict(self.claim,src='second',k='other',family='time_order',raw_text='Keep lunch after demos.',payload={'activities':['lunch','demo'],'relation':'after'})
+        result=normalize({'claims':[c],'irrelevant':['synthetic-source'],'ambiguous':[]},batch)
+        self.assertEqual(result['claims'][0]['status'],'UNKNOWN')

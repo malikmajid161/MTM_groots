@@ -72,3 +72,38 @@ class ProviderTests(unittest.TestCase):
         budget=RunBudget()
         with self.assertRaises(ValueError): ModelClient('https://x.invalid','m','s').call([],budget,TraceRecorder(),tag='fake')
         self.assertEqual(budget.attempts,0)
+
+    def test_http_failures_preserve_raw_response_and_usage(self):
+        from model_io import ProviderResponseError
+        body='{"error":{"message":"rate limited"},"usage":{"total_tokens":4}}'
+        def fail(*args): raise ProviderResponseError(429,body)
+        trace=TraceRecorder(); budget=RunBudget()
+        with self.assertRaises(ProviderResponseError):
+            ModelClient('https://example.invalid','m','s',transport=fail).call([],budget,trace)
+        self.assertEqual(trace.records[0]['output'],{'http_status':429,'body':body})
+        self.assertEqual(trace.totals()['total_tokens'],4)
+        self.assertEqual(budget.attempts,1)
+
+    def test_real_http_error_and_malformed_response_not_retried(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+        from model_io import ProviderResponseError
+        requests=[]
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                requests.append(1)
+                self.send_response(429 if len(requests)==1 else 200)
+                self.end_headers(); self.wfile.write(b'raw provider response')
+            def log_message(self,*args): pass
+        with HTTPServer(('127.0.0.1',0),Handler) as server:
+            thread=Thread(target=server.serve_forever,daemon=True); thread.start()
+            try:
+                for status in (429,200):
+                    with self.assertRaises(ProviderResponseError) as error:
+                        http_transport(f'http://127.0.0.1:{server.server_port}/chat','dummy',{},2)
+                    self.assertEqual(error.exception.status,status)
+                    self.assertEqual(error.exception.body,'raw provider response')
+                self.assertEqual(len(requests),2)
+            finally:
+                server.shutdown();thread.join()
