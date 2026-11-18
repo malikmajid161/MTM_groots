@@ -29,6 +29,13 @@ class PipelineTests(unittest.TestCase):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 source = json.loads(body["messages"][-1]["content"])["source"]
                 requests.append(source["text"])
+                if len(requests) == 5:
+                    payload = b'{"error":"mock provider unavailable"}'
+                    self.send_response(503)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 claims = [
                     {"kind": "fact", "modality": "none", "u": "items",
                      "price_basis": record.get("scope", "fixed"), **record, "src": source["src"],
@@ -86,6 +93,20 @@ class PipelineTests(unittest.TestCase):
                 self.assertIn("Model call 4 | mock-http-version | reading", result.stdout)
                 self.assertIn('"configured_model": "mock-http"', result.stdout)
                 self.assertIn('"message": "Supplier claims an order reduction."', result.stdout)
+
+                failed_input = root / "unavailable.txt"
+                failed_input.write_text("A follow-up arrives while the provider is down.", encoding="utf-8")
+                failure = subprocess.run(
+                    [sys.executable, str(repo / "main.py"), str(failed_input)], cwd=root,
+                    env=env, capture_output=True, encoding="utf-8", timeout=60,
+                )
+                self.assertEqual(failure.returncode, 1)
+                self.assertIn("Saved plan before failed run", failure.stdout)
+                self.assertIn('"http_status": 503', failure.stdout)
+                self.assertIn("Total tokens: unavailable for 1 of 5 calls", failure.stdout)
+                after = json.loads((root / "runtime" / "session.json").read_text(encoding="utf-8"))
+                self.assertEqual(after["result"], session["result"])
+                self.assertEqual(after["runs"][-1]["attempts"], 1)
             finally:
                 server.shutdown()
                 worker.join()
