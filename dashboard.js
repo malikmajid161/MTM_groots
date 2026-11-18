@@ -18,15 +18,26 @@ themeToggle.addEventListener("click", () => {
     try { localStorage.setItem("groots-theme", theme); } catch { /* Keep the current-page preference. */ }
 });
 
-const session = JSON.parse(document.querySelector("#session-data").content.textContent);
-const result = session.result;
-const ledger = result?.ledger ?? {};
-const runs = session.runs ?? [];
-const latest = runs.at(-1);
-const calls = runs.flatMap(run => run.calls ?? []);
-const sourceMap = new Map(Object.entries(session.sources ?? {}));
-const messageMap = new Map(ledger.sources ?? []);
-const dates = new Map(ledger.message_dates ?? []);
+let result, runs, latest, calls, sourceMap, messageMap, dates;
+function loadSession(session) {
+    if (!Array.isArray(session?.runs) || !Object.hasOwn(session, "result")) {
+        throw new Error("Choose a Groots session.json file.");
+    }
+    const ledger = session.result?.ledger ?? {};
+    const incomingCalls = session.runs.flatMap(run => run.calls ?? []);
+    const incomingMessages = new Map(ledger.sources ?? []);
+    const incomingDates = new Map(ledger.message_dates ?? []);
+    result = session.result;
+    runs = session.runs;
+    latest = runs.at(-1);
+    calls = incomingCalls;
+    sourceMap = new Map(Object.entries(session.sources ?? {}));
+    messageMap = incomingMessages;
+    dates = incomingDates;
+}
+
+let currentSession = JSON.parse(document.querySelector("#session-data").content.textContent);
+loadSession(currentSession);
 const unavailable = "Unavailable";
 const areaNames = ["venue", "schedule", "food", "judging", "budget"];
 const sections = [["plan", "Plan"], ["trace", "Traces"], ["updates", "Updates"]];
@@ -189,6 +200,29 @@ function chooseTime(value) {
     return value.replace("T", " ");
 }
 
+function barChart(title, values, units = "") {
+    const panel = card(title);
+    const known = values.map(([name, value]) => [name, quantity(value)]);
+    const max = Math.max(1, ...known.map(([, value]) => value ?? 0));
+    for (const [name, value] of known) {
+        const row = el("div", "bar-row");
+        const header = el("div", "row spread");
+        header.append(el("span", "", name), el("span", "muted",
+            value === null || value < 0 ? unavailable : value.toLocaleString() + units));
+        row.append(header);
+        if (value !== null && value >= 0) {
+            const track = el("div", "bar-track");
+            track.setAttribute("aria-hidden", "true");
+            const fill = el("div", "bar-fill");
+            fill.style.width = (value / max * 100) + "%";
+            track.append(fill);
+            row.append(track);
+        }
+        panel.append(row);
+    }
+    return panel;
+}
+
 function eventPlan(page) {
     const current = areas(result);
     const head = heading(page, "Event plan", latest?.status === "failed" ?
@@ -245,6 +279,14 @@ function eventPlan(page) {
     if (Object.keys(budget.extras ?? {}).length) {
         budgetCard.append(details("Itemized extras", () => facts(Object.entries(budget.extras))));
     }
+    const charts = el("div", "plan-charts");
+    charts.append(
+        barChart("Venue capacity", [["Attendance", venue.people], ["Capacity", venue.capacity]]),
+        barChart("Meal coverage", [["Required", food.required], ["Planned", food.quantity]]),
+        barChart("Budget usage", [["Spent", budget.total], ["Limit", budget.cap]],
+            budget.currency ? " " + budget.currency : ""),
+    );
+    page.append(charts);
     grid.append(scheduleCard, venueCard, foodCard, judgingCard, budgetCard);
     page.append(grid);
     const issues = result?.plan?.issues ?? [];
@@ -466,8 +508,8 @@ sections.forEach(([id, title], index) => {
     tab.setAttribute("aria-controls", "panel-" + id);
     tab.addEventListener("keydown", event => {
         let next;
-        if (event.key === "ArrowRight") next = (index + 1) % sections.length;
-        if (event.key === "ArrowLeft") next = (index - 1 + sections.length) % sections.length;
+        if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % sections.length;
+        if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + sections.length) % sections.length;
         if (event.key === "Home") next = 0;
         if (event.key === "End") next = sections.length - 1;
         if (next !== undefined) {
@@ -486,3 +528,28 @@ sections.forEach(([id, title], index) => {
 });
 
 activate("plan");
+
+// The offline dashboard opens saved planner results.
+const upload = document.querySelector("#session-upload");
+const uploadStatus = document.querySelector("#upload-status");
+upload.addEventListener("change", async () => {
+    const file = upload.files[0];
+    if (!file) return;
+    const refresh = () => {
+        for (const {panel} of tabs.values()) panel.replaceChildren();
+        activate("plan");
+    };
+    try {
+        const session = JSON.parse(await file.text());
+        loadSession(session);
+        refresh();
+        currentSession = session;
+        uploadStatus.textContent = file.name;
+    } catch {
+        loadSession(currentSession);
+        refresh();
+        uploadStatus.textContent = "Could not open this file. Choose a Groots session.json.";
+    } finally {
+        upload.value = "";
+    }
+});
