@@ -148,6 +148,7 @@ def extract_for_cli(batch, context, budget, record):
                 total_tokens=usage["total_tokens"],
                 elapsed_seconds=row["elapsed_seconds"],
                 error=row["error"],
+                configured_model=row["model"],
             ))
 
     messages = message_sources(batch)

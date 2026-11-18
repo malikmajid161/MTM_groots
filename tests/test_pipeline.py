@@ -37,7 +37,7 @@ class PipelineTests(unittest.TestCase):
                 ]
                 extracted = {"claims": claims, "irrelevant": [], "ambiguous": []}
                 payload = json.dumps({
-                    "model": "mock-http",
+                    "model": "mock-http-version",
                     "choices": [{"message": {"content": json.dumps(extracted)}}],
                     "usage": {"prompt_tokens": 11, "completion_tokens": 9, "total_tokens": 20},
                 }).encode()
@@ -83,6 +83,9 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(plan["budget"]["total"], "381")
                 self.assertEqual(plan["venue"]["capacity"], 25)
                 self.assertIn("Total tokens: 80", result.stdout)
+                self.assertIn("Model call 4 | mock-http-version | reading", result.stdout)
+                self.assertIn('"configured_model": "mock-http"', result.stdout)
+                self.assertIn('"message": "Supplier claims an order reduction."', result.stdout)
             finally:
                 server.shutdown()
                 worker.join()
