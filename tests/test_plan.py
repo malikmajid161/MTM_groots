@@ -85,3 +85,24 @@ class PlannerTests(unittest.TestCase):
         unknown = apply_update(None, {"claims": records}).state.plan
         self.assertEqual(unknown.status, "UNVERIFIED")
         self.assertTrue(any("required venue features are unverified" in issue for issue in unknown.issues))
+
+    def test_required_features_distinguish_unknown_from_absence(self):
+        base = fixture() + [claim("general", "event", "event", "required_feature", ["lift"])]
+        result = apply_update(None, {"claims": base}).state
+        self.assertEqual(result.plan.status, "UNVERIFIED")
+        for features, expected in [([], "INFEASIBLE"), (["lift"], "VALID")]:
+            with self.subTest(features=features):
+                options = base + [claim("venue", "venue_option", "hall", "required_feature", features)]
+                self.assertEqual(apply_update(None, {"claims": options}).state.plan.status, expected)
+
+    def test_required_meal_is_retained_when_cheaper_meal_exists(self):
+        base = fixture() + [
+            claim("food", "vendor_item", "meal", "engagement_rule", "required"),
+            claim("food", "vendor_item", "alternative", "engagement_rule", "optional"),
+            claim("food", "vendor_item", "alternative", "quantity", 25),
+            claim("food", "vendor_item", "alternative", "unit_price", 1,
+                  price_basis="per_item", currency="PKR"),
+        ]
+        plan = apply_update(None, {"claims": base}).state.plan
+        self.assertEqual(plan.status, "VALID", plan.issues)
+        self.assertEqual(plan.areas["food"]["item"], "meal")

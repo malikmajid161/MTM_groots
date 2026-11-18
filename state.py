@@ -23,6 +23,7 @@ class State:
     last_valid: Plan | None = None
     review_issues: tuple = ()
     message_dates: tuple = ()
+    constraints: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -51,9 +52,9 @@ def parse_message_date(value):
 
 
 def apply_update(state, extraction):
-    """Apply compact normalized fixtures with externally verified source context.
+    """Apply compact normalized claims with externally verified source context.
 
-    The fixture adapter expects trusted_scopes and trusted_message_dates to
+    The planner expects trusted_scopes and trusted_message_dates to
     come from the input envelope supplied by the caller.
     """
     state = State() if state is None else state
@@ -68,12 +69,17 @@ def apply_update(state, extraction):
     decisions = []
     affected = set()
     blocking = []
+    constraints = list(state.constraints)
+    incoming_constraints = list(extraction.get("constraints", ()))
     for source, message in extraction.get("sources", {}).items():
         if source in sources and sources[source] != message:
             raise ValueError(f"Source ID already belongs to different evidence: {source}")
         sources[source] = message
 
     for record in extraction.get("claims", ()):
+        if "k" not in record and "family" in record and "payload" in record:
+            incoming_constraints.append(record)
+            continue
         claim = normalize_claim(record)
         source = claim.source or "(missing source)"
         if record in history:
@@ -111,8 +117,14 @@ def apply_update(state, extraction):
             continue
 
         previous = active.get(claim.identity)
-        target = record.get("corrects")
-        if target is not None and (previous is None or target != previous["src"]):
+        target = record.get("correction_target", record.get("corrects"))
+        if isinstance(target, dict):
+            target = target.get("claim_id") or target
+        matches = target is not None and previous is not None and (
+            target == previous.get("claim_id") or
+            ("corrects" in record and target == previous["src"])
+        )
+        if target is not None and not matches:
             reason = "Correction target does not match the active claim"
             decisions.append(Decision(source, "unresolved", reason))
             blocking.append(f"{source}: {reason}")
@@ -121,7 +133,7 @@ def apply_update(state, extraction):
             older = parse_message_date(dates.get(source))
             newer = parse_message_date(dates.get(previous["src"]))
             if older is not None and newer is not None and older < newer:
-                if target == previous["src"]:
+                if matches:
                     reason = f"Retrospective correction needs review ({older.isoformat()} < {newer.isoformat()})"
                     decisions.append(Decision(source, "unresolved", reason))
                     blocking.append(f"{source}: {reason}")
@@ -153,8 +165,19 @@ def apply_update(state, extraction):
     for source in extraction.get("irrelevant", ()):
         decisions.append(Decision(source, "ignored", "Irrelevant message"))
     for source in extraction.get("ambiguous", ()):
+        if isinstance(source, dict):
+            source = source.get("src") or "(missing source)"
         decisions.append(Decision(source, "unresolved", "Extraction reported ambiguous content"))
         blocking.append(f"{source}: ambiguous content")
+    for constraint in incoming_constraints:
+        if constraint in constraints:
+            continue
+        constraints.append(dict(constraint))
+        source = constraint.get("src") or "(missing source)"
+        family = constraint.get("family") or "unknown"
+        reason = f"Constraint needs evaluation: {family}"
+        decisions.append(Decision(source, "unresolved", reason))
+        blocking.append(f"{source}: {reason}")
     if blocking:
         affected.update(DEPENDENCIES["general"])
     plan = build_plan(normalize_claim(record) for record in active.values()) if affected or state.plan is None else state.plan
@@ -167,5 +190,6 @@ def apply_update(state, extraction):
         decisions=(*state.decisions, *decisions), plan=plan,
         last_valid=plan if plan.status == "VALID" else state.last_valid, review_issues=unresolved,
         message_dates=tuple(dates.items()),
+        constraints=tuple(constraints),
     )
     return UpdateResult(updated, tuple(decisions), tuple(sorted(affected)))

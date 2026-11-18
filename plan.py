@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from itertools import combinations
 
 AREAS = frozenset(("venue", "schedule", "food", "judging", "budget", "general"))
 ENTITY_TYPES = frozenset((
@@ -32,6 +33,7 @@ class Claim:
     kind: str = "fact"
     reason: str = ""
     unit: str = ""
+    price_basis: str = ""
 
     @property
     def identity(self):
@@ -93,19 +95,24 @@ def normalize_claim(record):
     key = record.get("k")
     value = record.get("v")
     scope = record.get("scope", "")
+    price_basis = record.get("price_basis", record.get("price_scope", scope))
     currency = record.get("currency", "")
     kind = record.get("kind", "fact")
     unit = record.get("u", "")
     reason = ""
     if not all(isinstance(item, str) for item in (
-        source, area, entity_type, entity_id, key, scope, currency, kind, unit
+        source, area, entity_type, entity_id, key, scope, price_basis, currency, kind, unit
     )):
         reason = "missing or invalid claim metadata"
     elif not source or not entity_id or area not in AREAS or entity_type not in ENTITY_TYPES:
         reason = "missing source or unsupported entity or area"
     elif key not in KEYS or kind not in KINDS:
         reason = "unsupported claim key or kind"
-    elif record.get("op", "=") != "=":
+    elif record.get("status") == "UNKNOWN":
+        reason = record.get("issue") or "extraction marked the claim unknown"
+    elif record.get("effective_period"):
+        reason = "effective periods require explicit plan-time evaluation"
+    elif record.get("op") not in (None, "=", "=="):
         reason = "operator requires a constraint evaluator"
     elif key in COUNT_KEYS:
         if type(value) is not int or value < 0:
@@ -113,8 +120,10 @@ def normalize_claim(record):
         elif key in {"team_size", "duration_minutes", "minutes_per_team"} and value == 0:
             reason = "expected a positive integer"
     elif key in PRICE_KEYS:
-        if key == "unit_price" and scope not in {"fixed", "per_item", "per_person"}:
+        if key == "unit_price" and price_basis not in {"fixed", "per_item", "per_person"}:
             reason = "price scope is missing or unsupported"
+        if key == "committed_cost" and price_basis not in {"", "fixed"}:
+            reason = "committed cost needs a fixed total"
         if not currency:
             reason = "currency is required"
         try:
@@ -133,7 +142,7 @@ def normalize_claim(record):
         except (TypeError, ValueError):
             reason = "expected an ISO datetime with an explicit offset"
     elif key == "required_feature":
-        if entity_type not in {"event", "venue_option"} or not feature_set(value):
+        if entity_type not in {"event", "venue_option"} or (not feature_set(value) and value != []):
             reason = "expected venue feature names on an event or venue"
     elif key == "availability_window":
         try:
@@ -141,7 +150,9 @@ def normalize_claim(record):
                 raise ValueError
         except (TypeError, ValueError):
             reason = "expected offset-aware judge or venue availability bounds"
-    return Claim(source, area, entity_type, entity_id, key, value, scope, currency, kind, reason, unit)
+    identity_scope = scope if scope not in ("fixed", "per_item", "per_person") else ""
+    return Claim(source, area, entity_type, entity_id, key, value, identity_scope, currency, kind,
+                 reason, unit, price_basis)
 
 @dataclass(frozen=True)
 class Plan:
@@ -153,7 +164,6 @@ class Plan:
 def build_plan(claims):
     """Build a candidate for one event and one explicitly timed judging activity."""
     from datetime import timedelta
-    from itertools import combinations
 
     claims = tuple(claims)
     areas = {area: {} for area in ("venue", "schedule", "food", "judging", "budget")}
@@ -186,7 +196,7 @@ def build_plan(claims):
         if value is None:
             return None
         claim = group[key]
-        multiplier = quantities.get(claim.scope if key == "unit_price" else "")
+        multiplier = quantities.get(claim.price_basis if key == "unit_price" else "")
         if multiplier is None:
             return None
         return claim.currency, Decimal(str(value)) * multiplier
@@ -218,6 +228,8 @@ def build_plan(claims):
     start, end = datetime.fromisoformat(start), datetime.fromisoformat(end)
     areas["schedule"] = {"activity": activity_id, "start": start.isoformat(), "end": end.isoformat()}
     teams = (students + team_size - 1) // team_size
+    if teams > 10_000:
+        return Plan("UNVERIFIED", areas, tuple(issues + ["Explicit team assignment limit exceeded."]))
     elapsed = end - start
     slots = elapsed // timedelta(minutes=team_minutes)
     if elapsed <= timedelta(0) or (duration is not None and elapsed != timedelta(minutes=duration)):
@@ -250,6 +262,14 @@ def build_plan(claims):
         issues.append("Venue and meal options are required")
     venue_capacities = {name: read(group, "capacity") for name, group in venues}
     meal_quantities = {name: read(group, "quantity") for name, group in meals}
+    for _, option in (*venues, *meals):
+        read(option, "unit_price")
+    meal_rules = {name: read(group, "engagement_rule") for name, group in meals}
+    required_meals = {name for name, rule in meal_rules.items() if rule == "required"}
+    if len(required_meals) > 1:
+        issues.append("Multiple required meal items need an explicit multi-item plan")
+    elif len(meals) > 1 and not required_meals and any(rule is None for rule in meal_rules.values()):
+        issues.append("Meal substitution terms are missing")
     for name, value in (*venue_capacities.items(), *meal_quantities.items()):
         if value is None:
             issues.append(f"{name}: a capacity or meal quantity is missing")
@@ -257,7 +277,14 @@ def build_plan(claims):
     required_features = feature_set(read(event, "required_feature"))
     venue_features = {name: read(group, "required_feature") for name, group in venues}
     venue_windows = {name: parse_window(read(group, "availability_window")) for name, group in venues}
-    optional = sorted(set(judge_prices) - required)
+    def usable_price(judge):
+        price = judge_prices[judge]
+        return price is not None and price[0] == currency
+
+    optional = sorted(
+        (judge for judge in set(judge_prices) - required if usable_price(judge)),
+        key=lambda judge: (judge_prices[judge][1], judge),
+    )
     step = timedelta(minutes=team_minutes)
     if slots > 10_000:
         return Plan("UNVERIFIED", areas, tuple(issues + ["Judging slot search exceeds the supported range."]))
@@ -268,11 +295,26 @@ def build_plan(claims):
         minimum = (teams + judge_cap - 1) // judge_cap
     else:
         minimum = 0
+    needed_optional = max(0, minimum - len(required))
+    if any(not usable_price(judge) for judge in required) or (
+        needed_optional and len(optional) != len(judges) - len(required)
+    ):
+        issues.append("A potentially needed judge has missing or incompatible price data")
     best = None
-    for size in range(max(0, minimum - len(required)), len(optional) + 1):
-        if not assignments_possible:
-            break
-        for extra in combinations(optional, size):
+    if not assignments_possible or len(optional) < needed_optional:
+        groups_to_try = ()
+    elif not any(judge_windows.values()):
+        groups_to_try = (iter((optional[:needed_optional],)),)
+    else:
+        groups_to_try = (
+            combinations(optional, size) for size in range(needed_optional, len(optional) + 1)
+        )
+    attempts = 0
+    for groups_at_size in groups_to_try:
+        for extra in groups_at_size:
+            attempts += 1
+            if attempts > 10_000:
+                return Plan("UNVERIFIED", areas, tuple(issues + ["Judge group search limit reached."]))
             engaged = sorted(required.union(extra))
             assigned = assign_slots(engaged, judging_slots, judge_cap, judge_windows, teams)
             if assigned is None:
@@ -292,7 +334,7 @@ def build_plan(claims):
                 capacity = venue_capacities[venue_id]
                 for meal_id, meal in meals:
                     quantity = meal_quantities[meal_id]
-                    if quantity is None:
+                    if quantity is None or (required_meals and required_meals != {meal_id}):
                         continue
                     meal_price = cost(meal, "unit_price", {
                         "fixed": 1, "per_item": quantity, "per_person": quantity
