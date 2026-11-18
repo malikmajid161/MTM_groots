@@ -70,16 +70,27 @@ def apply_update(state, extraction):
     affected = set()
     blocking = []
     constraints = list(state.constraints)
+    claims = []
     incoming_constraints = list(extraction.get("constraints", ()))
+    for record in extraction.get("claims", ()):
+        if (record.get("k") in (None, "other") and isinstance(record.get("payload"), dict)
+                and record.get("status") != "UNKNOWN" and record.get("kind", "fact") == "fact"):
+            incoming_constraints.append(record)
+        else:
+            claims.append(record)
+    new_constraints = []
+    for constraint in incoming_constraints:
+        if constraint not in constraints:
+            constraints.append(dict(constraint))
+            new_constraints.append(constraint)
+    if new_constraints:
+        affected.update(DEPENDENCIES["general"])
     for source, message in extraction.get("sources", {}).items():
         if source in sources and sources[source] != message:
             raise ValueError(f"Source ID already belongs to different evidence: {source}")
         sources[source] = message
 
-    for record in extraction.get("claims", ()):
-        if "k" not in record and "family" in record and "payload" in record:
-            incoming_constraints.append(record)
-            continue
+    for record in claims:
         claim = normalize_claim(record)
         source = claim.source or "(missing source)"
         if record in history:
@@ -144,7 +155,7 @@ def apply_update(state, extraction):
         if claim.kind == "directive":
             candidate = active.copy()
             candidate[claim.identity] = record
-            proposed = build_plan(normalize_claim(item) for item in candidate.values())
+            proposed = build_plan((normalize_claim(item) for item in candidate.values()), constraints)
             if state.review_issues or blocking or proposed.status != "VALID":
                 outcome = "rejected" if proposed.status == "INFEASIBLE" else "unresolved"
                 evidence = " / ".join(proposed.issues) or "Existing claims require review"
@@ -169,18 +180,16 @@ def apply_update(state, extraction):
             source = source.get("src") or "(missing source)"
         decisions.append(Decision(source, "unresolved", "Extraction reported ambiguous content"))
         blocking.append(f"{source}: ambiguous content")
-    for constraint in incoming_constraints:
-        if constraint in constraints:
-            continue
-        constraints.append(dict(constraint))
-        source = constraint.get("src") or "(missing source)"
-        family = constraint.get("family") or "unknown"
-        reason = f"Constraint needs evaluation: {family}"
-        decisions.append(Decision(source, "unresolved", reason))
-        blocking.append(f"{source}: {reason}")
     if blocking:
         affected.update(DEPENDENCIES["general"])
-    plan = build_plan(normalize_claim(record) for record in active.values()) if affected or state.plan is None else state.plan
+    plan = state.plan
+    if affected or plan is None:
+        plan = build_plan((normalize_claim(record) for record in active.values()), constraints)
+    for constraint in new_constraints:
+        source = constraint.get("src") or "(missing source)"
+        family = constraint.get("family") or "unknown"
+        outcome = "unresolved" if plan.status == "UNVERIFIED" and constraint.get("modality") != "soft" else "accepted"
+        decisions.append(Decision(source, outcome, f"Recorded {family} constraint. Plan status: {plan.status}"))
     # Preserve unresolved facts on later runs until the review seam can resolve them.
     unresolved = tuple(dict.fromkeys((*state.review_issues, *blocking)))
     if unresolved:
