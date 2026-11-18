@@ -129,7 +129,7 @@ def render_trace(session):
                         reviewing |= 'draft_extraction' in json.loads(message.get('content', '{}'))
                     except (ValueError, TypeError):
                         pass
-            purpose = 'Reviewing extracted facts' if reviewing else 'Reading messages' 
+            purpose = 'Reviewing extracted facts' if reviewing else 'Reading messages'
         tokens = call.get('total_tokens')
         lines.append(f"Call {call['number']} | Model: {call.get('configured_model') or call.get('model', 'unknown')} | Purpose: {purpose} | Tokens: {tokens if tokens is not None else 'unknown'}" + (' | FAILED' if call.get('error') else ''))
     lines += ['', 'INPUT EVIDENCE', pretty(session.get('sources', {}))]
